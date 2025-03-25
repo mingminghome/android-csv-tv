@@ -1,9 +1,13 @@
 # TV,
 ![TV, Logo](https://github.com/user-attachments/assets/5a2a2258-a355-49ad-8e8f-bc2579397a0e)
 
-
+From published Google Sheets CSV (No hosting needed) or your own CSV or a
 
 **TV,** is an Android TV application built using the Leanback library, designed to display and play videos from a CSV file. The app allows users to specify a remote CSV file (e.g., a Google Sheets URL) or fall back to a local default CSV file (`default_csv.csv`). It supports various video stream formats and web content, with pointer-based control for an enhanced TV experience.
+
+## Video metadata sourced from
+ - Published Google Sheets CSV (No hosting needed)  
+ - Your own CSV
 
 ## Features
 
@@ -20,13 +24,8 @@
 - **Buffering Configuration**: Customizable buffering settings for smooth playback on TV devices.
 
 ## Screenshots
+![tv](https://github.com/user-attachments/assets/56ccfd78-cef4-4b93-8a2f-e0064c0f3557)
 
-<!-- Add screenshots of your app here -->  
-![Main Screen](https://github.com/user-attachments/assets/e8ed5bc2-abfb-47c2-8daa-3d7950a8b48d)
-![Content Selection Screen](https://github.com/user-attachments/assets/dbf3655f-a114-407c-bb47-6efb1f8eb792)
-![Playback Screen](https://github.com/user-attachments/assets/2c416e72-3764-4b8c-b03e-ff11aafae1ae)
-![Webview Screen](https://github.com/user-attachments/assets/03036888-25a7-458a-9490-0689c07d71c8)
-![Setup Screen](https://github.com/user-attachments/assets/192ff1f2-5c73-4c48-9165-803d47b11e18)
 
 ## Prerequisites
 
@@ -50,7 +49,7 @@ git clone https://github.com/<your-username>/android-csv-tv.gitcd android-csv-tv
   ./gradlew assembleDebug adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```  
 ### Compiled Version
-A compiled version of the app is available for download at: [Insert URL here].
+A compiled version of the app is available for download at: [Release](https://github.com/mingminghome/android-csv-tv/releases/tag/release).
 
 ## Usage
 
