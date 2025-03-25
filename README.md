@@ -1,8 +1,6 @@
 # TV,
 ![TV, Logo](https://github.com/user-attachments/assets/5a2a2258-a355-49ad-8e8f-bc2579397a0e)
 
-From published Google Sheets CSV (No hosting needed) or your own CSV or a
-
 **TV,** is an Android TV application built using the Leanback library, designed to display and play videos from a CSV file. The app allows users to specify a remote CSV file (e.g., a Google Sheets URL) or fall back to a local default CSV file (`default_csv.csv`). It supports various video stream formats and web content, with pointer-based control for an enhanced TV experience.
 
 ## Video metadata sourced from
