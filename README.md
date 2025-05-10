@@ -47,7 +47,7 @@ git clone https://github.com/<your-username>/android-csv-tv.gitcd android-csv-tv
   ./gradlew assembleDebug adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```  
 ### Compiled Version
-A compiled version of the app is available for download at: [Release](https://github.com/mingminghome/android-csv-tv/releases/tag/release).
+A compiled version of the app is available for download at: [Release](https://github.com/mingminghome/android-csv-tv/releases/).
 
 ## Usage
 
