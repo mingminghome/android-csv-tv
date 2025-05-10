@@ -1,6 +1,7 @@
 package com.mmhw.csvtv
 
 import android.os.Bundle
+import android.view.KeyEvent
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -18,7 +19,7 @@ import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
-import androidx.media3.datasource.okhttp.OkHttpDataSource // Added missing import
+import androidx.media3.datasource.okhttp.OkHttpDataSource
 import okhttp3.OkHttpClient
 import java.security.SecureRandom
 import java.security.cert.X509Certificate
@@ -31,11 +32,10 @@ class PlaybackFragment : Fragment() {
     private var loadingIndicator: ProgressBar? = null
     private var playerView: PlayerView? = null
 
-    // Buffer parameters
-    private val minBufferMs = 30000 // Minimum buffer size (must be largest)
-    private val maxBufferMs = 50000 // Maximum buffer size
-    private val bufferForPlaybackMs = 2500 // Buffer before starting playback
-    private val bufferForPlaybackAfterRebufferMs = 5000 // Buffer after rebuffering
+    private val minBufferMs = 30000
+    private val maxBufferMs = 50000
+    private val bufferForPlaybackMs = 2500
+    private val bufferForPlaybackAfterRebufferMs = 5000
 
     override fun onCreateView(
         inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
@@ -50,46 +50,34 @@ class PlaybackFragment : Fragment() {
         playerView = view.findViewById<PlayerView>(R.id.player_view)
         val errorText = view.findViewById<TextView>(R.id.error_text)
 
-        // Find the loading indicator and center it
         loadingIndicator = view.findViewById<ProgressBar>(R.id.loading_indicator)
-
-        // Fix loading indicator position in RelativeLayout
         (loadingIndicator?.layoutParams as? RelativeLayout.LayoutParams)?.apply {
             addRule(RelativeLayout.CENTER_IN_PARENT, RelativeLayout.TRUE)
         }
 
-        // Show loading indicator initially
         loadingIndicator?.visibility = View.VISIBLE
-
-        // Important: Override the XML attribute by setting useController to false initially
         playerView?.useController = false
-
-        // Keep the screen on during playback
         playerView?.keepScreenOn = true
 
-        // Configure buffering parameters with LoadControl
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
-                minBufferMs,  // minBufferMs must be >= bufferForPlaybackAfterRebufferMs
-                maxBufferMs,  // maxBufferMs
-                bufferForPlaybackMs,  // bufferForPlaybackMs
-                bufferForPlaybackAfterRebufferMs   // bufferForPlaybackAfterRebufferMs
+                minBufferMs,
+                maxBufferMs,
+                bufferForPlaybackMs,
+                bufferForPlaybackAfterRebufferMs
             )
             .build()
 
-        // Create a custom OkHttpClient that ignores SSL certificate validation (for HTTPS streams)
         val okHttpClient = OkHttpClient.Builder()
             .sslSocketFactory(createUnsafeSslContext().socketFactory, createUnsafeTrustManager())
             .hostnameVerifier { _, _ -> true }
             .build()
 
-        // Create a DefaultHttpDataSource.Factory using the custom OkHttpClient
         val httpDataSourceFactory = DefaultHttpDataSource.Factory()
             .setUserAgent("ExoPlayer-CSVTV")
-            .setConnectTimeoutMs(10000) // 10 seconds
-            .setReadTimeoutMs(10000)    // 10 seconds
+            .setConnectTimeoutMs(10000)
+            .setReadTimeoutMs(10000)
 
-        // Initialize ExoPlayer
         player = ExoPlayer.Builder(requireContext())
             .setLoadControl(loadControl)
             .build().apply {
@@ -98,51 +86,35 @@ class PlaybackFragment : Fragment() {
                     val rtmpDataSourceFactory = RtmpDataSource.Factory()
                     DefaultMediaSourceFactory(rtmpDataSourceFactory).createMediaSource(mediaItem)
                 } else if (url.endsWith(".m3u8")) {
-                    // Use the custom OkHttpClient for HLS streams
                     val okHttpDataSourceFactory = OkHttpDataSource.Factory(okHttpClient)
                     HlsMediaSource.Factory(okHttpDataSourceFactory)
-                        .createMediaSource(mediaItem) // Fixed: Use the correct method
+                        .createMediaSource(mediaItem)
                 } else {
-                    // Use the default HTTP data source for other streams (e.g., .mp4)
                     DefaultMediaSourceFactory(httpDataSourceFactory).createMediaSource(mediaItem)
                 }
                 setMediaSource(mediaSource)
                 prepare()
-
-                // Don't start playback immediately
                 playWhenReady = false
 
                 addListener(object : Player.Listener {
                     override fun onPlaybackStateChanged(playbackState: Int) {
                         when (playbackState) {
                             Player.STATE_BUFFERING -> {
-                                // Show loading indicator and hide error text
                                 loadingIndicator?.visibility = View.VISIBLE
                                 errorText.visibility = View.GONE
-
-                                // Completely disable and hide controls during buffering
                                 playerView?.useController = false
-                                playerView?.hideController() // Force hide controller
+                                playerView?.hideController()
                             }
                             Player.STATE_READY -> {
-                                // Hide loading indicator
                                 loadingIndicator?.visibility = View.GONE
-
-                                // Enable player controls once ready
                                 playerView?.useController = true
-
-                                // Once we're buffered and ready, start playback
                                 playWhenReady = true
                             }
                             Player.STATE_ENDED -> {
-                                // Hide loading indicator when playback ends
                                 loadingIndicator?.visibility = View.GONE
-
-                                // Keep controls enabled at the end
                                 playerView?.useController = true
                             }
                             Player.STATE_IDLE -> {
-                                // In idle state, hide loading and keep controls enabled
                                 loadingIndicator?.visibility = View.GONE
                                 playerView?.useController = true
                             }
@@ -150,28 +122,40 @@ class PlaybackFragment : Fragment() {
                     }
 
                     override fun onPlayerError(error: PlaybackException) {
-                        // Hide loading indicator and show error
                         loadingIndicator?.visibility = View.GONE
                         errorText.visibility = View.VISIBLE
-                        errorText.text = "Failed to play stream: ${error.message}"
-
-                        // Enable controls on error to allow retry if needed
+                        val errorMessage = when {
+                            error.message?.contains("Cleartext") == true ->
+                                "Failed to play stream: HTTP traffic not permitted. Please use HTTPS or contact the app developer."
+                            else -> "Failed to play stream: ${error.message}"
+                        }
+                        errorText.text = errorMessage
                         playerView?.useController = true
                     }
                 })
             }
 
         playerView?.player = player
+
+        view.isFocusable = true
+        view.requestFocus()
+        view.setOnKeyListener { _, keyCode, event ->
+            if (event.action == KeyEvent.ACTION_DOWN && keyCode == KeyEvent.KEYCODE_BACK) {
+                stopPlayback()
+                parentFragmentManager.popBackStack()
+                true
+            } else {
+                false
+            }
+        }
     }
 
-    // Create an SSLContext that trusts all certificates (unsafe)
     private fun createUnsafeSslContext(): SSLContext {
         val sslContext = SSLContext.getInstance("TLS")
         sslContext.init(null, arrayOf<TrustManager>(createUnsafeTrustManager()), SecureRandom())
         return sslContext
     }
 
-    // Create a TrustManager that trusts all certificates (unsafe)
     private fun createUnsafeTrustManager(): X509TrustManager {
         return object : X509TrustManager {
             override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
@@ -180,22 +164,31 @@ class PlaybackFragment : Fragment() {
         }
     }
 
+    private fun stopPlayback() {
+        player?.stop()
+        player?.release()
+        player = null
+        playerView?.player = null
+        playerView?.keepScreenOn = false
+    }
+
     override fun onStart() {
         super.onStart()
         player?.playWhenReady = true
     }
 
+    override fun onPause() {
+        super.onPause()
+        stopPlayback()
+    }
+
     override fun onStop() {
         super.onStop()
-        player?.playWhenReady = false
     }
 
     override fun onDestroyView() {
         super.onDestroyView()
-        // Clear the keepScreenOn flag to allow the screen to turn off
-        playerView?.keepScreenOn = false
-        player?.release()
-        player = null
+        stopPlayback()
         playerView = null
         loadingIndicator = null
     }
