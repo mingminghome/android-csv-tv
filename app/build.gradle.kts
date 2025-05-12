@@ -16,8 +16,8 @@ android {
         applicationId = "com.mmhw.csvtv"
         minSdk = 21
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.02"
+        versionCode = 3
+        versionName = "1.03"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

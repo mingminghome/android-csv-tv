@@ -1,7 +1,8 @@
 package com.mmhw.csvtv
 
 import android.os.Bundle
-import android.view.KeyEvent
+import android.os.Handler
+import android.os.Looper
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -31,7 +32,15 @@ class PlaybackFragment : Fragment() {
     private var player: ExoPlayer? = null
     private var loadingIndicator: ProgressBar? = null
     private var playerView: PlayerView? = null
+    private var errorText: TextView? = null
 
+    // Auto-retry parameters
+    private var retryCount = 0
+    private val maxRetries = 3
+    private val retryDelayMs = 3000L // 3 seconds
+    private val handler = Handler(Looper.getMainLooper())
+
+    // Buffer parameters
     private val minBufferMs = 30000
     private val maxBufferMs = 50000
     private val bufferForPlaybackMs = 2500
@@ -48,17 +57,32 @@ class PlaybackFragment : Fragment() {
 
         val url = arguments?.getString("video_url") ?: return
         playerView = view.findViewById<PlayerView>(R.id.player_view)
-        val errorText = view.findViewById<TextView>(R.id.error_text)
-
+        errorText = view.findViewById<TextView>(R.id.error_text)
         loadingIndicator = view.findViewById<ProgressBar>(R.id.loading_indicator)
+
+        // Center loading indicator
         (loadingIndicator?.layoutParams as? RelativeLayout.LayoutParams)?.apply {
             addRule(RelativeLayout.CENTER_IN_PARENT, RelativeLayout.TRUE)
         }
 
+        // Show loading indicator and hide player view initially
         loadingIndicator?.visibility = View.VISIBLE
+        playerView?.visibility = View.GONE // Hide media player until ready
+        errorText?.visibility = View.GONE
+
+        // Disable player controls initially
         playerView?.useController = false
         playerView?.keepScreenOn = true
 
+        // Initialize and start playback
+        initializePlayer(url)
+    }
+
+    private fun initializePlayer(url: String) {
+        // Reset retry count
+        retryCount = 0
+
+        // Configure buffering
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
                 minBufferMs,
@@ -68,29 +92,35 @@ class PlaybackFragment : Fragment() {
             )
             .build()
 
+        // Create OkHttpClient with unsafe SSL handling
         val okHttpClient = OkHttpClient.Builder()
             .sslSocketFactory(createUnsafeSslContext().socketFactory, createUnsafeTrustManager())
             .hostnameVerifier { _, _ -> true }
             .build()
 
+        // Create HTTP data source factory
         val httpDataSourceFactory = DefaultHttpDataSource.Factory()
             .setUserAgent("ExoPlayer-CSVTV")
             .setConnectTimeoutMs(10000)
             .setReadTimeoutMs(10000)
 
+        // Initialize ExoPlayer
         player = ExoPlayer.Builder(requireContext())
             .setLoadControl(loadControl)
             .build().apply {
                 val mediaItem = MediaItem.fromUri(url)
-                val mediaSource = if (url.startsWith("rtmp://")) {
-                    val rtmpDataSourceFactory = RtmpDataSource.Factory()
-                    DefaultMediaSourceFactory(rtmpDataSourceFactory).createMediaSource(mediaItem)
-                } else if (url.endsWith(".m3u8")) {
-                    val okHttpDataSourceFactory = OkHttpDataSource.Factory(okHttpClient)
-                    HlsMediaSource.Factory(okHttpDataSourceFactory)
-                        .createMediaSource(mediaItem)
-                } else {
-                    DefaultMediaSourceFactory(httpDataSourceFactory).createMediaSource(mediaItem)
+                val mediaSource = when {
+                    url.startsWith("rtmp://") -> {
+                        val rtmpDataSourceFactory = RtmpDataSource.Factory()
+                        DefaultMediaSourceFactory(rtmpDataSourceFactory).createMediaSource(mediaItem)
+                    }
+                    url.endsWith(".m3u8") -> {
+                        val okHttpDataSourceFactory = OkHttpDataSource.Factory(okHttpClient)
+                        HlsMediaSource.Factory(okHttpDataSourceFactory).createMediaSource(mediaItem)
+                    }
+                    else -> {
+                        DefaultMediaSourceFactory(httpDataSourceFactory).createMediaSource(mediaItem)
+                    }
                 }
                 setMediaSource(mediaSource)
                 prepare()
@@ -101,21 +131,30 @@ class PlaybackFragment : Fragment() {
                         when (playbackState) {
                             Player.STATE_BUFFERING -> {
                                 loadingIndicator?.visibility = View.VISIBLE
-                                errorText.visibility = View.GONE
+                                playerView?.visibility = View.GONE
+                                errorText?.visibility = View.GONE
                                 playerView?.useController = false
                                 playerView?.hideController()
                             }
                             Player.STATE_READY -> {
-                                loadingIndicator?.visibility = View.GONE
+                                loadingIndicator?.animate()?.alpha(0f)?.setDuration(200)?.withEndAction {
+                                    loadingIndicator?.visibility = View.GONE
+                                    loadingIndicator?.alpha = 1f
+                                }?.start()
+                                playerView?.alpha = 0f
+                                playerView?.visibility = View.VISIBLE
+                                playerView?.animate()?.alpha(1f)?.setDuration(200)?.start()
                                 playerView?.useController = true
                                 playWhenReady = true
                             }
                             Player.STATE_ENDED -> {
                                 loadingIndicator?.visibility = View.GONE
+                                playerView?.visibility = View.VISIBLE
                                 playerView?.useController = true
                             }
                             Player.STATE_IDLE -> {
                                 loadingIndicator?.visibility = View.GONE
+                                playerView?.visibility = View.GONE // Hide player in idle state
                                 playerView?.useController = true
                             }
                         }
@@ -123,31 +162,41 @@ class PlaybackFragment : Fragment() {
 
                     override fun onPlayerError(error: PlaybackException) {
                         loadingIndicator?.visibility = View.GONE
-                        errorText.visibility = View.VISIBLE
-                        val errorMessage = when {
-                            error.message?.contains("Cleartext") == true ->
-                                "Failed to play stream: HTTP traffic not permitted. Please use HTTPS or contact the app developer."
-                            else -> "Failed to play stream: ${error.message}"
+                        playerView?.visibility = View.GONE // Hide player on error
+                        if (retryCount < maxRetries) {
+                            retryCount++
+                            errorText?.visibility = View.VISIBLE
+                            errorText?.text = "Playback error, retrying ($retryCount/$maxRetries)..."
+                            handler.postDelayed({
+                                // Re-prepare the player
+                                player?.setMediaSource(player?.currentMediaItem?.let {
+                                    when {
+                                        url.startsWith("rtmp://") -> {
+                                            val rtmpDataSourceFactory = RtmpDataSource.Factory()
+                                            DefaultMediaSourceFactory(rtmpDataSourceFactory).createMediaSource(it)
+                                        }
+                                        url.endsWith(".m3u8") -> {
+                                            val okHttpDataSourceFactory = OkHttpDataSource.Factory(okHttpClient)
+                                            HlsMediaSource.Factory(okHttpDataSourceFactory).createMediaSource(it)
+                                        }
+                                        else -> {
+                                            DefaultMediaSourceFactory(httpDataSourceFactory).createMediaSource(it)
+                                        }
+                                    }
+                                } ?: return@postDelayed)
+                                player?.prepare()
+                                player?.playWhenReady = true
+                            }, retryDelayMs)
+                        } else {
+                            errorText?.visibility = View.VISIBLE
+                            errorText?.text = "Failed to play stream after $maxRetries attempts: ${error.message}"
+                            playerView?.useController = true
                         }
-                        errorText.text = errorMessage
-                        playerView?.useController = true
                     }
                 })
             }
 
         playerView?.player = player
-
-        view.isFocusable = true
-        view.requestFocus()
-        view.setOnKeyListener { _, keyCode, event ->
-            if (event.action == KeyEvent.ACTION_DOWN && keyCode == KeyEvent.KEYCODE_BACK) {
-                stopPlayback()
-                parentFragmentManager.popBackStack()
-                true
-            } else {
-                false
-            }
-        }
     }
 
     private fun createUnsafeSslContext(): SSLContext {
@@ -164,32 +213,24 @@ class PlaybackFragment : Fragment() {
         }
     }
 
-    private fun stopPlayback() {
-        player?.stop()
-        player?.release()
-        player = null
-        playerView?.player = null
-        playerView?.keepScreenOn = false
-    }
-
     override fun onStart() {
         super.onStart()
         player?.playWhenReady = true
     }
 
-    override fun onPause() {
-        super.onPause()
-        stopPlayback()
-    }
-
     override fun onStop() {
         super.onStop()
+        player?.playWhenReady = false
     }
 
     override fun onDestroyView() {
         super.onDestroyView()
-        stopPlayback()
+        handler.removeCallbacksAndMessages(null)
+        playerView?.keepScreenOn = false
+        player?.release()
+        player = null
         playerView = null
         loadingIndicator = null
+        errorText = null
     }
 }

@@ -53,6 +53,7 @@ class MainFragment : BrowseSupportFragment() {
     private fun handleVideoClick(video: Video) {
         val url = video.url?.trim() ?: ""
         val title = video.title?.trim() ?: ""
+        Log.d("MainFragment", "Video clicked: title=$title, url=$url")
 
         when {
             url.equals("refresh", ignoreCase = true) || title.equals("Refresh", ignoreCase = true) -> {
@@ -62,9 +63,32 @@ class MainFragment : BrowseSupportFragment() {
             }
             url.equals("settings", ignoreCase = true) || title.equals("Settings", ignoreCase = true) -> {
                 startActivity(Intent(requireContext(), SetupActivity::class.java))
+                return
             }
-            Utils.isVideoStream(url) -> openPlaybackFragment(url)
-            else -> openWebViewFragment(url)
+            else -> {
+                // Show a loading toast while resolving the URL
+                Toast.makeText(requireContext(), "Resolving URL...", Toast.LENGTH_SHORT).show()
+
+                // Resolve the URL to check if it’s a video stream
+                Utils.resolveUrl(url) { resolvedUrl, error ->
+                    if (error != null || resolvedUrl.isNullOrBlank()) {
+                        Log.w("MainFragment", "Failed to resolve URL: $url, error: $error")
+                        // Fallback to WebViewFragment if resolution fails
+                        Log.d("MainFragment", "Opening WebViewFragment for URL: $url")
+                        openWebViewFragment(url)
+                        return@resolveUrl
+                    }
+
+                    Log.d("MainFragment", "Resolved URL: $url -> $resolvedUrl, isVideoStream=${Utils.isVideoStream(resolvedUrl)}")
+                    if (Utils.isVideoStream(resolvedUrl)) {
+                        Log.d("MainFragment", "Opening PlaybackFragment for resolved URL: $resolvedUrl")
+                        openPlaybackFragment(resolvedUrl)
+                    } else {
+                        Log.d("MainFragment", "Opening WebViewFragment for resolved URL: $resolvedUrl")
+                        openWebViewFragment(resolvedUrl)
+                    }
+                }
+            }
         }
     }
 
@@ -113,7 +137,6 @@ class MainFragment : BrowseSupportFragment() {
         Utils.fetchSheetData(requireContext(), linkToUse) { videos, error ->
             if (error != null) {
                 if (sheetLink != null) {
-                    // If saved link fails, try default CSV
                     Utils.fetchSheetData(requireContext(), defaultCsvLink) { defaultVideos, defaultError ->
                         processVideosData(defaultVideos, defaultError)
                     }
