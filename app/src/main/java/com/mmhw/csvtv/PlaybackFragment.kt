@@ -9,6 +9,7 @@ import android.view.ViewGroup
 import android.widget.ProgressBar
 import android.widget.RelativeLayout
 import android.widget.TextView
+import android.widget.Toast
 import androidx.fragment.app.Fragment
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
@@ -21,6 +22,8 @@ import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
 import androidx.media3.datasource.okhttp.OkHttpDataSource
+import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
+import android.util.Log
 import okhttp3.OkHttpClient
 import java.security.SecureRandom
 import java.security.cert.X509Certificate
@@ -33,18 +36,10 @@ class PlaybackFragment : Fragment() {
     private var loadingIndicator: ProgressBar? = null
     private var playerView: PlayerView? = null
     private var errorText: TextView? = null
-
-    // Auto-retry parameters
     private var retryCount = 0
     private val maxRetries = 3
-    private val retryDelayMs = 3000L // 3 seconds
+    private val retryDelayMs = 3000L
     private val handler = Handler(Looper.getMainLooper())
-
-    // Buffer parameters
-    private val minBufferMs = 30000
-    private val maxBufferMs = 50000
-    private val bufferForPlaybackMs = 2500
-    private val bufferForPlaybackAfterRebufferMs = 5000
 
     override fun onCreateView(
         inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
@@ -60,51 +55,42 @@ class PlaybackFragment : Fragment() {
         errorText = view.findViewById<TextView>(R.id.error_text)
         loadingIndicator = view.findViewById<ProgressBar>(R.id.loading_indicator)
 
-        // Center loading indicator
         (loadingIndicator?.layoutParams as? RelativeLayout.LayoutParams)?.apply {
             addRule(RelativeLayout.CENTER_IN_PARENT, RelativeLayout.TRUE)
         }
 
-        // Show loading indicator and hide player view initially
         loadingIndicator?.visibility = View.VISIBLE
-        playerView?.visibility = View.GONE // Hide media player until ready
+        playerView?.visibility = View.GONE
         errorText?.visibility = View.GONE
 
-        // Disable player controls initially
         playerView?.useController = false
         playerView?.keepScreenOn = true
 
-        // Initialize and start playback
         initializePlayer(url)
     }
 
     private fun initializePlayer(url: String) {
-        // Reset retry count
         retryCount = 0
 
-        // Configure buffering
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
-                minBufferMs,
-                maxBufferMs,
-                bufferForPlaybackMs,
-                bufferForPlaybackAfterRebufferMs
+                50000,
+                100000,
+                5000,
+                10000
             )
             .build()
 
-        // Create OkHttpClient with unsafe SSL handling
         val okHttpClient = OkHttpClient.Builder()
             .sslSocketFactory(createUnsafeSslContext().socketFactory, createUnsafeTrustManager())
             .hostnameVerifier { _, _ -> true }
             .build()
 
-        // Create HTTP data source factory
         val httpDataSourceFactory = DefaultHttpDataSource.Factory()
             .setUserAgent("ExoPlayer-CSVTV")
-            .setConnectTimeoutMs(10000)
-            .setReadTimeoutMs(10000)
+            .setConnectTimeoutMs(15000)
+            .setReadTimeoutMs(15000)
 
-        // Initialize ExoPlayer
         player = ExoPlayer.Builder(requireContext())
             .setLoadControl(loadControl)
             .build().apply {
@@ -116,7 +102,10 @@ class PlaybackFragment : Fragment() {
                     }
                     url.endsWith(".m3u8") -> {
                         val okHttpDataSourceFactory = OkHttpDataSource.Factory(okHttpClient)
-                        HlsMediaSource.Factory(okHttpDataSourceFactory).createMediaSource(mediaItem)
+                        HlsMediaSource.Factory(okHttpDataSourceFactory)
+                            .setAllowChunklessPreparation(true)
+                            .setLoadErrorHandlingPolicy(DefaultLoadErrorHandlingPolicy(3))
+                            .createMediaSource(mediaItem)
                     }
                     else -> {
                         DefaultMediaSourceFactory(httpDataSourceFactory).createMediaSource(mediaItem)
@@ -125,6 +114,16 @@ class PlaybackFragment : Fragment() {
                 setMediaSource(mediaSource)
                 prepare()
                 playWhenReady = false
+
+                val bufferingTimeoutRunnable = Runnable {
+                    if (playbackState == Player.STATE_BUFFERING) {
+                        loadingIndicator?.visibility = View.GONE
+                        playerView?.visibility = View.GONE
+                        errorText?.visibility = View.VISIBLE
+                        errorText?.text = "Stream failed to load after timeout"
+                        showToast("Stream failed to load. Please try again.")
+                    }
+                }
 
                 addListener(object : Player.Listener {
                     override fun onPlaybackStateChanged(playbackState: Int) {
@@ -135,8 +134,10 @@ class PlaybackFragment : Fragment() {
                                 errorText?.visibility = View.GONE
                                 playerView?.useController = false
                                 playerView?.hideController()
+                                handler.postDelayed(bufferingTimeoutRunnable, 30000)
                             }
                             Player.STATE_READY -> {
+                                handler.removeCallbacks(bufferingTimeoutRunnable)
                                 loadingIndicator?.animate()?.alpha(0f)?.setDuration(200)?.withEndAction {
                                     loadingIndicator?.visibility = View.GONE
                                     loadingIndicator?.alpha = 1f
@@ -148,27 +149,30 @@ class PlaybackFragment : Fragment() {
                                 playWhenReady = true
                             }
                             Player.STATE_ENDED -> {
+                                handler.removeCallbacks(bufferingTimeoutRunnable)
                                 loadingIndicator?.visibility = View.GONE
                                 playerView?.visibility = View.VISIBLE
                                 playerView?.useController = true
                             }
                             Player.STATE_IDLE -> {
+                                handler.removeCallbacks(bufferingTimeoutRunnable)
                                 loadingIndicator?.visibility = View.GONE
-                                playerView?.visibility = View.GONE // Hide player in idle state
+                                playerView?.visibility = View.GONE
                                 playerView?.useController = true
                             }
                         }
+                        Log.d("PlaybackFragment", "Playback state changed: $playbackState")
                     }
 
                     override fun onPlayerError(error: PlaybackException) {
+                        handler.removeCallbacks(bufferingTimeoutRunnable)
                         loadingIndicator?.visibility = View.GONE
-                        playerView?.visibility = View.GONE // Hide player on error
+                        playerView?.visibility = View.GONE
                         if (retryCount < maxRetries) {
                             retryCount++
                             errorText?.visibility = View.VISIBLE
                             errorText?.text = "Playback error, retrying ($retryCount/$maxRetries)..."
                             handler.postDelayed({
-                                // Re-prepare the player
                                 player?.setMediaSource(player?.currentMediaItem?.let {
                                     when {
                                         url.startsWith("rtmp://") -> {
@@ -177,7 +181,10 @@ class PlaybackFragment : Fragment() {
                                         }
                                         url.endsWith(".m3u8") -> {
                                             val okHttpDataSourceFactory = OkHttpDataSource.Factory(okHttpClient)
-                                            HlsMediaSource.Factory(okHttpDataSourceFactory).createMediaSource(it)
+                                            HlsMediaSource.Factory(okHttpDataSourceFactory)
+                                                .setAllowChunklessPreparation(true)
+                                                .setLoadErrorHandlingPolicy(DefaultLoadErrorHandlingPolicy(3))
+                                                .createMediaSource(it)
                                         }
                                         else -> {
                                             DefaultMediaSourceFactory(httpDataSourceFactory).createMediaSource(it)
@@ -191,7 +198,17 @@ class PlaybackFragment : Fragment() {
                             errorText?.visibility = View.VISIBLE
                             errorText?.text = "Failed to play stream after $maxRetries attempts: ${error.message}"
                             playerView?.useController = true
+                            showToast("Failed to play stream: ${error.message}")
                         }
+                        Log.e("PlaybackFragment", "Player error: ${error.message}", error)
+                    }
+
+                    override fun onIsLoadingChanged(isLoading: Boolean) {
+                        Log.d("PlaybackFragment", "Is loading: $isLoading")
+                    }
+
+                    override fun onRenderedFirstFrame() {
+                        Log.d("PlaybackFragment", "First frame rendered")
                     }
                 })
             }
@@ -210,6 +227,12 @@ class PlaybackFragment : Fragment() {
             override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
             override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
             override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
+        }
+    }
+
+    private fun showToast(message: String) {
+        activity?.runOnUiThread {
+            Toast.makeText(requireContext(), message, Toast.LENGTH_LONG).show()
         }
     }
 

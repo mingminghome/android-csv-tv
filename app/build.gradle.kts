@@ -90,6 +90,7 @@ dependencies {
     implementation(libs.okhttp)
 
     // Jsoup for web scraping (if needed)
+    implementation ("org.json:json:20231013")
     implementation("org.jsoup:jsoup:1.17.2")
     implementation(libs.opencsv)
 

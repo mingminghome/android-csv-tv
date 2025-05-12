@@ -10,13 +10,17 @@ import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.webkit.JavascriptInterface
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import android.widget.ImageView
+import android.widget.Toast
 import androidx.fragment.app.Fragment
+import org.json.JSONObject
+import kotlin.math.max
 
 class WebViewFragment : Fragment() {
 
@@ -24,21 +28,22 @@ class WebViewFragment : Fragment() {
     private lateinit var pointer: ImageView
     private lateinit var container: FrameLayout
     private val pointerHideHandler = Handler(Looper.getMainLooper())
-    private val POINTER_HIDE_DELAY = 3000L // Hide pointer after 3 seconds of inactivity
+    private val pointerHideDelay = 3000L
     private var pointerX = 0f
     private var pointerY = 0f
-    private val POINTER_SPEED = 15f // Adjust for faster/slower movement
+    private val pointerSpeed = 15f
+    private val scrollThreshold = 30f
     private var contentWidth: Int = 0
     private var contentHeight: Int = 0
-    private val SCROLL_THRESHOLD = 50f // Pixels from the edge to trigger scrolling
-    private val SCROLL_AMOUNT = 100 // Pixels to scroll per step
-
-    // For fullscreen video support
+    private var bottomNavHeight: Float = 0f
     private var customView: View? = null
     private var customViewCallback: WebChromeClient.CustomViewCallback? = null
     private lateinit var fullscreenContainer: FrameLayout
     private var originalOrientation: Int = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
     private var isInFullscreen = false
+    private var lastDimensionUpdate = 0L
+    private val dimensionUpdateDebounce = 1000L
+    private val jsHandler = Handler(Looper.getMainLooper())
 
     override fun onCreateView(
         inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
@@ -54,10 +59,8 @@ class WebViewFragment : Fragment() {
         webView = view.findViewById(R.id.web_view)
         container = view.findViewById(R.id.webview_container)
 
-        // Store original orientation
-        originalOrientation = activity?.requestedOrientation ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        originalOrientation = requireActivity().requestedOrientation
 
-        // Create a container for fullscreen videos
         fullscreenContainer = FrameLayout(requireContext()).apply {
             id = View.generateViewId()
             layoutParams = FrameLayout.LayoutParams(
@@ -67,16 +70,11 @@ class WebViewFragment : Fragment() {
             visibility = View.GONE
         }
 
-        // Add fullscreen container to the root of the activity
-        activity?.findViewById<ViewGroup>(android.R.id.content)?.addView(fullscreenContainer)
+        requireActivity().findViewById<ViewGroup>(android.R.id.content)?.addView(fullscreenContainer)
 
-        // Add pointer ImageView
         setupPointer(view)
-
-        // Setup WebView
         setupWebView(url)
 
-        // Set focus and key listener on the container
         container.isFocusable = true
         container.isFocusableInTouchMode = true
         container.requestFocus()
@@ -85,31 +83,26 @@ class WebViewFragment : Fragment() {
             handleKeyEvent(keyCode, event)
         }
 
-        // Add focus change listener for debugging
         container.setOnFocusChangeListener { _, hasFocus ->
             println("Container focus changed: hasFocus=$hasFocus")
         }
     }
 
     private fun setupPointer(view: View) {
-        // Make sure you have a pointer image in your drawable resources (cursor.png)
         pointer = ImageView(context).apply {
             id = View.generateViewId()
             setImageResource(R.drawable.cursor)
-            visibility = View.INVISIBLE
-
-            // Set initial size of the pointer
+            visibility = View.VISIBLE
             layoutParams = FrameLayout.LayoutParams(48, 48)
         }
 
-        // Add pointer to the container
         (view as ViewGroup).addView(pointer)
 
-        // Initialize pointer position to center of screen
         view.post {
             pointerX = (container.width / 2).toFloat()
             pointerY = (container.height / 2).toFloat()
             updatePointerPosition()
+            println("Pointer initialized: x=$pointerX, y=$pointerY, containerHeight=${container.height}")
         }
     }
 
@@ -121,9 +114,8 @@ class WebViewFragment : Fragment() {
             useWideViewPort = true
             builtInZoomControls = true
             displayZoomControls = false
-            mediaPlaybackRequiresUserGesture = false // Allow autoplay to avoid NotAllowedError
-            domStorageEnabled = true // Enable DOM storage for JavaScript
-            // Add support for fullscreen video
+            mediaPlaybackRequiresUserGesture = false
+            domStorageEnabled = true
             allowFileAccess = true
             setSupportMultipleWindows(true)
             javaScriptCanOpenWindowsAutomatically = true
@@ -131,23 +123,25 @@ class WebViewFragment : Fragment() {
             setSupportZoom(true)
         }
 
+        webView.addJavascriptInterface(AndroidBridge(this), "AndroidBridge")
+
         webView.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
-                // Get the content dimensions after the page loads
                 updateContentDimensions()
-
-                // Inject JavaScript to fix common issues with video players
                 injectFullscreenFix()
+                injectMutationObserver()
+                injectInteractionFix()
             }
 
             override fun onReceivedError(view: WebView?, errorCode: Int, description: String?, failingUrl: String?) {
                 println("WebViewFragment: Error loading page: $description (code: $errorCode)")
+                showToast("Failed to load page: $description")
+                parentFragmentManager.popBackStack()
             }
         }
 
         webView.webChromeClient = object : WebChromeClient() {
-            // For fullscreen support
             override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
                 println("onShowCustomView called")
                 if (customView != null) {
@@ -159,21 +153,17 @@ class WebViewFragment : Fragment() {
                 customView = view
                 customViewCallback = callback
 
-                // Force landscape orientation for better video viewing
-                activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                requireActivity().requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
 
-                // Add the fullscreen view to the fullscreen container (which is at Activity level)
                 fullscreenContainer.addView(view, FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT
                 ))
 
-                // Show fullscreen container and hide the WebView
                 fullscreenContainer.visibility = View.VISIBLE
                 webView.visibility = View.INVISIBLE
                 container.visibility = View.INVISIBLE
 
-                // Hide pointer when entering fullscreen
                 hidePointer()
 
                 println("Entered fullscreen mode")
@@ -185,7 +175,6 @@ class WebViewFragment : Fragment() {
 
                 isInFullscreen = false
 
-                // Pause any playing videos
                 webView.evaluateJavascript(
                     """
                     (function() {
@@ -197,51 +186,40 @@ class WebViewFragment : Fragment() {
                     """, null
                 )
 
-                // Restore original orientation
-                activity?.requestedOrientation = originalOrientation
+                requireActivity().requestedOrientation = originalOrientation
 
-                // Hide fullscreen container and show the WebView again
                 fullscreenContainer.visibility = View.GONE
                 webView.visibility = View.VISIBLE
                 container.visibility = View.VISIBLE
 
-                // Remove the custom view
                 fullscreenContainer.removeView(customView)
 
-                // Call callback to notify that we're done
                 customViewCallback?.onCustomViewHidden()
 
                 customView = null
                 customViewCallback = null
 
-                // Restore focus to container
                 container.requestFocus()
                 println("Exited fullscreen mode")
             }
         }
 
-        // Add hardware acceleration for better video performance
         webView.setLayerType(View.LAYER_TYPE_HARDWARE, null)
 
         webView.loadUrl(url)
 
-        // Prevent WebView from taking focus on touch
         webView.isFocusable = false
         webView.isFocusableInTouchMode = false
     }
 
     private fun injectFullscreenFix() {
-        // Inject JavaScript to ensure proper fullscreen API usage by the video player
         val js = """
             (function() {
-                // Override the default fullscreen API implementation
                 var videoElements = document.getElementsByTagName('video');
                 for (var i = 0; i < videoElements.length; i++) {
-                    videoElements[i].addEventListener('webkitbeginfullscreen', function() {
+                    videoElements[i].addEventListener('webkitBeginFullScreen', function() {
                         console.log('Video entered fullscreen');
                     });
-                    
-                    // Add click listeners to any fullscreen buttons if needed
                     var fullscreenButtons = document.querySelectorAll('.fullscreen-button, .ytp-fullscreen-button, [aria-label="Fullscreen"]');
                     for (var j = 0; j < fullscreenButtons.length; j++) {
                         fullscreenButtons[j].addEventListener('click', function() {
@@ -249,55 +227,167 @@ class WebViewFragment : Fragment() {
                         });
                     }
                 }
-                
-                // Force hardware acceleration for all video elements
                 var style = document.createElement('style');
                 style.textContent = 'video { transform: translateZ(0); }';
                 document.head.appendChild(style);
             })();
         """.trimIndent()
 
-        webView.evaluateJavascript(js, null)
+        jsHandler.post { webView.evaluateJavascript(js, null) }
     }
 
-    // Update the content dimensions using JavaScript
-    private fun updateContentDimensions() {
-        // Get content width
-        webView.evaluateJavascript(
-            "Math.max(document.body.scrollWidth, document.documentElement.scrollWidth)",
-            ValueCallback { value ->
-                contentWidth = value.toIntOrNull() ?: 0
-                println("Content width updated: $contentWidth")
-            }
-        )
+    private fun injectInteractionFix() {
+        val js = """
+            (function() {
+                function applyInteractionStyles(element) {
+                    element.style.setProperty('pointer-events', 'auto', 'important');
+                    element.style.setProperty('z-index', '10000', 'important');
+                }
+                var elements = document.querySelectorAll('a[href], button, [role="button"], [onclick], [class*="page"], [class*="nav"] a');
+                for (var i = 0; i < elements.length; i++) {
+                    applyInteractionStyles(elements[i]);
+                }
+            })();
+        """.trimIndent()
+        jsHandler.post { webView.evaluateJavascript(js, null) }
+    }
 
-        // Get content height
+    private fun injectMutationObserver() {
+        val js = """
+            (function() {
+                const observer = new MutationObserver(function(mutations) {
+                    mutations.forEach(function(mutation) {
+                        window.AndroidBridge.updateDimensions();
+                    });
+                });
+                observer.observe(document.body, {
+                    childList: true,
+                    subtree: true,
+                    attributes: true
+                });
+            })();
+        """.trimIndent()
+        jsHandler.post { webView.evaluateJavascript(js, null) }
+    }
+
+    class AndroidBridge(private val fragment: WebViewFragment) {
+        @JavascriptInterface
+        @Suppress("unused")
+        fun updateDimensions() {
+            fragment.activity?.runOnUiThread {
+                if (fragment.isAdded) {
+                    val now = System.currentTimeMillis()
+                    if (now - fragment.lastDimensionUpdate > fragment.dimensionUpdateDebounce) {
+                        fragment.lastDimensionUpdate = now
+                        fragment.updateContentDimensions()
+                        fragment.injectInteractionFix()
+                        println("Content dimensions updated due to DOM change")
+                    }
+                }
+            }
+        }
+    }
+
+    private fun updateContentDimensions() {
         webView.evaluateJavascript(
-            "Math.max(document.body.scrollHeight, document.documentElement.scrollHeight)",
+            """
+            (function() {
+                const originalScrollY = window.scrollY;
+                window.scrollTo(0, Number.MAX_SAFE_INTEGER);
+                const maxScrollY = window.scrollY;
+                window.scrollTo(0, originalScrollY);
+
+                let maxHeight = Math.max(
+                    document.body.scrollHeight,
+                    document.documentElement.scrollHeight,
+                    document.body.offsetHeight,
+                    document.documentElement.offsetHeight,
+                    window.innerHeight,
+                    maxScrollY + window.innerHeight
+                );
+                let maxWidth = Math.max(
+                    document.body.scrollWidth,
+                    document.documentElement.scrollWidth,
+                    document.body.offsetWidth,
+                    document.documentElement.offsetWidth,
+                    window.innerWidth
+                );
+
+                const elements = document.querySelectorAll('[style*="position"], nav, footer, [role="navigation"]');
+                let fixedHeight = 0;
+                let bottomNavHeight = 0;
+                let fixedElementsDetails = [];
+                for (let el of elements) {
+                    const style = window.getComputedStyle(el);
+                    if (style.position === 'fixed' || style.position === 'sticky') {
+                        if (style.display !== 'none' && style.visibility !== 'hidden') {
+                            const rect = el.getBoundingClientRect();
+                            const elBottom = rect.bottom + window.scrollY;
+                            maxHeight = Math.max(maxHeight, elBottom);
+                            fixedHeight = Math.max(fixedHeight, rect.height);
+                            const bottomValue = parseFloat(style.bottom) || 0;
+                            if ((el.tagName === 'DIV' || el.tagName === 'NAV') && bottomValue >= 0 && bottomValue < 50 && rect.height < 100) {
+                                bottomNavHeight = Math.max(bottomNavHeight, rect.height);
+                            }
+                            fixedElementsDetails.push({
+                                tag: el.tagName,
+                                height: rect.height,
+                                bottom: rect.bottom,
+                                position: style.position,
+                                styleBottom: style.bottom,
+                                zIndex: style.zIndex,
+                                class: el.className,
+                                display: style.display,
+                                visibility: style.visibility
+                            });
+                        }
+                    }
+                }
+
+                return {
+                    width: maxWidth,
+                    height: maxHeight,
+                    fixedHeight: fixedHeight,
+                    bottomNavHeight: bottomNavHeight,
+                    fixedElementsDetails: fixedElementsDetails
+                };
+            })();
+            """.trimIndent(),
             ValueCallback { value ->
-                contentHeight = value.toIntOrNull() ?: 0
-                println("Content height updated: $contentHeight")
+                var contentHeightFromWebView = (webView.contentHeight * webView.scaleY).toInt()
+                try {
+                    val json = JSONObject(value)
+                    contentWidth = json.getInt("width")
+                    contentHeight = json.getInt("height")
+                    val fixedHeight = json.getInt("fixedHeight")
+                    bottomNavHeight = json.getInt("bottomNavHeight").toFloat()
+                    val fixedElementsDetails = json.getJSONArray("fixedElementsDetails")
+                    contentHeightFromWebView = (webView.contentHeight * webView.scaleY).toInt()
+                    if (contentHeight > contentHeightFromWebView + 500) {
+                        contentHeight = contentHeightFromWebView
+                        println("Content height capped to contentHeightFromWebView: $contentHeight")
+                    }
+                    println("Content dimensions updated: width=$contentWidth, height=$contentHeight, fixedHeight=$fixedHeight, bottomNavHeight=$bottomNavHeight, fixedElementsDetails=$fixedElementsDetails, scrollY=${webView.scrollY}, contentHeightFromWebView=$contentHeightFromWebView, scaleY=${webView.scaleY}, containerHeight=${container.height}")
+                } catch (e: Exception) {
+                    contentWidth = webView.width
+                    contentHeight = contentHeightFromWebView
+                    bottomNavHeight = 0f
+                    println("Failed to parse content dimensions: ${e.message}, using defaults: width=$contentWidth, height=$contentHeight, contentHeightFromWebView=$contentHeightFromWebView, containerHeight=${container.height}")
+                }
             }
         )
     }
 
     private fun handleKeyEvent(keyCode: Int, event: KeyEvent): Boolean {
+        println("Handling key event: keyCode=$keyCode, action=${event.action}")
         if (event.action != KeyEvent.ACTION_DOWN) {
             return false
         }
 
-        // Handle back button for exiting fullscreen mode
-        if (keyCode == KeyEvent.KEYCODE_BACK && isInFullscreen) {
-            (webView.webChromeClient as WebChromeClient).onHideCustomView()
-            return true
-        }
-
-        // Skip regular navigation if in fullscreen mode
         if (isInFullscreen) {
             when (keyCode) {
                 KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER,
                 KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
-                    // In fullscreen mode, play/pause the video
                     webView.evaluateJavascript(
                         """
                         (function() {
@@ -317,14 +407,13 @@ class WebViewFragment : Fragment() {
                     return true
                 }
                 KeyEvent.KEYCODE_BACK -> {
-                    (webView.webChromeClient as WebChromeClient).onHideCustomView()
+                    webView.webChromeClient?.onHideCustomView()
                     return true
                 }
             }
             return false
         }
 
-        // Ensure the container retains focus
         if (!container.hasFocus()) {
             container.requestFocus()
             println("Focus restored to container in handleKeyEvent")
@@ -333,70 +422,156 @@ class WebViewFragment : Fragment() {
         when (keyCode) {
             KeyEvent.KEYCODE_DPAD_UP -> {
                 showPointer()
-                movePointer(0f, -POINTER_SPEED)
+                movePointer(0f, -pointerSpeed)
                 return true
             }
             KeyEvent.KEYCODE_DPAD_DOWN -> {
                 showPointer()
-                movePointer(0f, POINTER_SPEED)
+                movePointer(0f, pointerSpeed)
                 return true
             }
             KeyEvent.KEYCODE_DPAD_LEFT -> {
                 showPointer()
-                movePointer(-POINTER_SPEED, 0f)
+                movePointer(-pointerSpeed, 0f)
                 return true
             }
             KeyEvent.KEYCODE_DPAD_RIGHT -> {
                 showPointer()
-                movePointer(POINTER_SPEED, 0f)
+                movePointer(pointerSpeed, 0f)
                 return true
             }
             KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
-                // Simulate click event on WebView at pointer position
                 performClick()
                 return true
             }
+            else -> {
+                println("Unhandled key event: keyCode=$keyCode")
+                return false
+            }
         }
-        return false
     }
 
     private fun movePointer(deltaX: Float, deltaY: Float) {
-        // Update pointer position
         pointerX += deltaX
         pointerY += deltaY
 
-        // Scroll the WebView if the pointer moves beyond the visible bounds
-        // Horizontal scrolling
-        if (pointerX < SCROLL_THRESHOLD && webView.scrollX > 0) {
-            val newScrollX = (webView.scrollX - SCROLL_AMOUNT).coerceAtLeast(0)
+        val contentHeightFromWebView = (webView.contentHeight * webView.scaleY).toInt()
+        var interactiveElement = ""
+        var interactiveElementY = 0f
+        var interactiveElementX = 0f
+        val adjustedY = (pointerY + webView.scrollY).coerceIn(0f, contentHeight.toFloat())
+        webView.evaluateJavascript(
+            """
+            (function() {
+                var x = ${pointerX.toInt()};
+                var y = ${adjustedY.toInt()};
+                var selectors = ['a[href]', 'button', '[role="button"]', '[onclick]', '[class*="page"]', '[class*="nav"] a'];
+                for (var i = 0; i < selectors.length; i++) {
+                    var elements = document.querySelectorAll(selectors[i]);
+                    for (var j = 0; j < elements.length; j++) {
+                        var rect = elements[j].getBoundingClientRect();
+                        if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+                            return elements[j].tagName + '|' + elements[j].className + '|' + rect.top + '|' + ((rect.left + rect.right) / 2);
+                        }
+                    }
+                }
+                return '';
+            })();
+            """.trimIndent(),
+            ValueCallback { value ->
+                try {
+                    if (value.isNotEmpty() && value != "\"\"") {
+                        val parts = value.replace("\"", "").split("|")
+                        if (parts.size >= 2) {
+                            interactiveElement = "${parts[0]}|${parts[1]}"
+                            interactiveElementY = parts.getOrNull(2)?.toFloatOrNull() ?: 0f
+                            interactiveElementX = parts.getOrNull(3)?.toFloatOrNull() ?: pointerX
+                        }
+                    }
+                    println("Interactive element check at x=$pointerX, y=$pointerY, adjustedY=$adjustedY, element=$interactiveElement, elementY=$interactiveElementY, elementX=$interactiveElementX, rawValue=$value")
+                } catch (e: Exception) {
+                    println("Failed to parse interactive element: ${e.message}, value=$value")
+                }
+            }
+        )
+
+        var hoverAttempt = 0
+        fun tryHover() {
+            webView.evaluateJavascript(
+                """
+                (function() {
+                    var x = ${pointerX.toInt()};
+                    var y = ${adjustedY.toInt()};
+                    var element = document.elementFromPoint(x, y);
+                    if (element) {
+                        var events = [
+                            new MouseEvent('mouseover', { view: window, bubbles: true, cancelable: true, clientX: x, clientY: y }),
+                            new MouseEvent('mouseenter', { view: window, bubbles: true, cancelable: true, clientX: x, clientY: y }),
+                            new MouseEvent('mousemove', { view: window, bubbles: true, cancelable: true, clientX: x, clientY: y }),
+                            new MouseEvent('mousehover', { view: window, bubbles: true, cancelable: true, clientX: x, clientY: y }),
+                            new PointerEvent('pointerover', { view: window, bubbles: true, cancelable: true, clientX: x, clientY: y }),
+                            new PointerEvent('pointerenter', { view: window, bubbles: true, cancelable: true, clientX: x, clientY: y }),
+                            new PointerEvent('pointermove', { view: window, bubbles: true, cancelable: true, clientX: x, clientY: y })
+                        ];
+                        events.forEach(event => element.dispatchEvent(event));
+                        return element.tagName + '|' + element.className;
+                    }
+                    return '';
+                })();
+                """.trimIndent(),
+                ValueCallback { value ->
+                    if (value == "\"\"" && hoverAttempt < 3) {
+                        hoverAttempt++
+                        jsHandler.postDelayed({ tryHover() }, 100)
+                    } else {
+                        println("Hover events simulated at x=$pointerX, y=$pointerY, adjustedY=$adjustedY, element=$value, attempt=$hoverAttempt")
+                    }
+                }
+            )
+        }
+        jsHandler.post { tryHover() }
+
+        if (deltaX < 0 && pointerX < scrollThreshold && webView.scrollX > 0) {
+            val newScrollX = (webView.scrollX - pointerSpeed.toInt()).coerceAtLeast(0)
             webView.scrollTo(newScrollX, webView.scrollY)
-            pointerX = SCROLL_THRESHOLD // Keep the pointer near the edge
-            println("Scrolled left: scrollX=${webView.scrollX}")
-        } else if (pointerX > container.width - pointer.width - SCROLL_THRESHOLD && contentWidth > 0) {
-            val maxScrollX = (contentWidth * webView.scaleX - container.width).toInt()
-            val newScrollX = (webView.scrollX + SCROLL_AMOUNT).coerceAtMost(maxScrollX.coerceAtLeast(0))
+            pointerX = scrollThreshold
+            println("Scrolled left: scrollX=${webView.scrollX}, pointerX=$pointerX, deltaX=$deltaX")
+        } else if (deltaX > 0 && pointerX > container.width - pointer.width - scrollThreshold && contentWidth > 0) {
+            val maxScrollX = (contentWidth * webView.scaleX - container.width).toInt().coerceAtLeast(0)
+            val newScrollX = (webView.scrollX + pointerSpeed.toInt()).coerceAtMost(maxScrollX)
             webView.scrollTo(newScrollX, webView.scrollY)
-            pointerX = (container.width - pointer.width - SCROLL_THRESHOLD).coerceAtLeast(0f)
-            println("Scrolled right: scrollX=${webView.scrollX}")
+            pointerX = (container.width.toFloat() - pointer.width.toFloat() - scrollThreshold).coerceAtLeast(0f)
+            println("Scrolled right: scrollX=${webView.scrollX}, pointerX=$pointerX, deltaX=$deltaX")
         }
 
-        // Vertical scrolling
-        if (pointerY < SCROLL_THRESHOLD && webView.scrollY > 0) {
-            val newScrollY = (webView.scrollY - SCROLL_AMOUNT).coerceAtLeast(0)
+        if (deltaY < 0 && webView.scrollY > 0) {
+            val newScrollY = (webView.scrollY - pointerSpeed.toInt()).coerceAtLeast(0)
             webView.scrollTo(webView.scrollX, newScrollY)
-            pointerY = SCROLL_THRESHOLD // Keep the pointer near the edge
-            println("Scrolled up: scrollY=${webView.scrollY}")
-        } else if (pointerY > container.height - pointer.height - SCROLL_THRESHOLD && contentHeight > 0) {
-            val maxScrollY = (contentHeight * webView.scaleY - container.height).toInt()
-            val newScrollY = (webView.scrollY + SCROLL_AMOUNT).coerceAtMost(maxScrollY.coerceAtLeast(0))
+            pointerY = (pointerY + deltaY).coerceAtLeast(0f)
+            if (interactiveElement.isNotEmpty()) {
+                pointerY = (interactiveElementY - webView.scrollY).coerceAtLeast(0f).coerceAtMost(container.height.toFloat() - pointer.height)
+                pointerX = interactiveElementX.coerceAtLeast(0f).coerceAtMost(container.width.toFloat() - pointer.width)
+                println("Adjusted pointer for interactive element: pointerX=$pointerX, pointerY=$pointerY, interactiveElement=$interactiveElement, elementX=$interactiveElementX, elementY=$interactiveElementY")
+            }
+            println("Scrolled up: scrollY=${webView.scrollY}, pointerX=$pointerX, pointerY=$pointerY, deltaY=$deltaY, containerHeight=${container.height}, interactiveElement=$interactiveElement")
+            updateContentDimensions()
+        } else if (deltaY > 0) {
+            val calculatedMaxScrollY = (contentHeight - container.height).toInt().coerceAtLeast(0)
+            val maxScrollY = maxOf(calculatedMaxScrollY, contentHeightFromWebView)
+            val newScrollY = (webView.scrollY + pointerSpeed.toInt()).coerceAtMost(maxScrollY)
             webView.scrollTo(webView.scrollX, newScrollY)
-            pointerY = (container.height - pointer.height - SCROLL_THRESHOLD).coerceAtLeast(0f)
-            println("Scrolled down: scrollY=${webView.scrollY}")
+            pointerY = (pointerY + deltaY).coerceAtMost(container.height.toFloat() - pointer.height)
+            if (interactiveElement.isNotEmpty()) {
+                pointerY = (interactiveElementY - webView.scrollY).coerceAtLeast(0f).coerceAtMost(container.height.toFloat() - pointer.height)
+                pointerX = interactiveElementX.coerceAtLeast(0f).coerceAtMost(container.width.toFloat() - pointer.width)
+                println("Adjusted pointer for interactive element: pointerX=$pointerX, pointerY=$pointerY, interactiveElement=$interactiveElement, elementX=$interactiveElementX, elementY=$interactiveElementY")
+            }
+            println("Scrolled down: scrollY=${webView.scrollY}, pointerX=$pointerX, pointerY=$pointerY, maxScrollY=$maxScrollY, contentHeight=$contentHeight, contentHeightFromWebView=$contentHeightFromWebView, scaleY=${webView.scaleY}, deltaY=$deltaY, bottomNavHeight=$bottomNavHeight, containerHeight=${container.height}, interactiveElement=$interactiveElement")
+            updateContentDimensions()
         }
 
-        // Keep pointer within bounds
-        pointerX = pointerX.coerceIn(0f, container.width.toFloat() - pointer.width)
-        pointerY = pointerY.coerceIn(0f, container.height.toFloat() - pointer.height)
+        pointerX = pointerX.coerceIn(0f, container.width.toFloat() - pointer.width.toFloat())
+        pointerY = pointerY.coerceIn(0f, container.height.toFloat())
 
         updatePointerPosition()
         resetPointerHideTimer()
@@ -405,13 +580,13 @@ class WebViewFragment : Fragment() {
     private fun updatePointerPosition() {
         pointer.x = pointerX
         pointer.y = pointerY
-        println("Pointer position updated: x=$pointerX, y=$pointerY")
+        pointer.visibility = View.VISIBLE
+        println("Pointer position updated: x=$pointerX, y=$pointerY, visibility=${pointer.visibility}")
     }
 
     private fun showPointer() {
         pointer.visibility = View.VISIBLE
-        println("Pointer shown")
-        resetPointerHideTimer()
+        println("Pointer shown: visibility=${pointer.visibility}")
     }
 
     private fun hidePointer() {
@@ -422,56 +597,74 @@ class WebViewFragment : Fragment() {
     private fun resetPointerHideTimer() {
         pointerHideHandler.removeCallbacksAndMessages(null)
         println("Pointer hide timer reset")
-        pointerHideHandler.postDelayed({ hidePointer() }, POINTER_HIDE_DELAY)
+        pointerHideHandler.postDelayed({ hidePointer() }, pointerHideDelay)
     }
 
     private fun performClick() {
-        println("Performing click at: x=$pointerX, y=$pointerY")
+        println("Performing click at: x=$pointerX, y=$pointerY, scrollY=${webView.scrollY}")
         showPointer()
 
-        // Calculate the coordinates within the WebView
         val x = pointerX.toInt()
-        val y = pointerY.toInt()
+        val adjustedY = (pointerY + webView.scrollY).toInt()
 
-        // Log focus state before dispatching touch events
+        webView.evaluateJavascript(
+            """
+            (function() {
+                var x = $x;
+                var y = $adjustedY;
+                var element = document.elementFromPoint(x, y);
+                if (element) {
+                    var clickEvent = new MouseEvent('click', { view: window, bubbles: true, cancelable: true, clientX: x, clientY: y });
+                    element.dispatchEvent(clickEvent);
+                    return element.tagName + '|' + element.className;
+                }
+                return 'No element found';
+            })();
+            """.trimIndent(),
+            ValueCallback { value ->
+                println("Click simulated: x=$x, y=$adjustedY, element=$value")
+                if (value == "\"No element found\"") {
+                    println("Click failed: No interactive element at x=$x, y=$adjustedY")
+                }
+            }
+        )
+
         println("Before dispatchTouchEvent: containerHasFocus=${container.hasFocus()}")
 
-        // Create and dispatch touch events
         val downTime = System.currentTimeMillis()
         val eventTime = downTime + 100
 
-        // Create DOWN event
         val downEvent = MotionEvent.obtain(
-            downTime, eventTime, MotionEvent.ACTION_DOWN, x.toFloat(), y.toFloat(), 0
+            downTime, eventTime, MotionEvent.ACTION_DOWN, x.toFloat(), pointerY.toFloat(), 0
         )
 
-        // Create UP event
         val upEvent = MotionEvent.obtain(
-            downTime, eventTime, MotionEvent.ACTION_UP, x.toFloat(), y.toFloat(), 0
+            downTime, eventTime, MotionEvent.ACTION_UP, x.toFloat(), pointerY.toFloat(), 0
         )
 
-        // Dispatch events to WebView
         webView.dispatchTouchEvent(downEvent)
         webView.dispatchTouchEvent(upEvent)
 
-        // Log focus state after dispatching touch events
         println("After dispatchTouchEvent: containerHasFocus=${container.hasFocus()}")
 
-        // Restore focus to the container
         container.requestFocus()
         println("Focus restored to container after click")
 
-        // Recycle the events
         downEvent.recycle()
         upEvent.recycle()
 
         resetPointerHideTimer()
     }
 
+    private fun showToast(message: String) {
+        activity?.runOnUiThread {
+            Toast.makeText(requireContext(), message, Toast.LENGTH_LONG).show()
+        }
+    }
+
     override fun onPause() {
         super.onPause()
         webView.onPause()
-        // Pause any playing videos
         webView.evaluateJavascript(
             """
             (function() {
@@ -495,14 +688,14 @@ class WebViewFragment : Fragment() {
     override fun onDestroy() {
         super.onDestroy()
         pointerHideHandler.removeCallbacksAndMessages(null)
+        jsHandler.removeCallbacksAndMessages(null)
 
-        // Exit fullscreen mode if active
         if (isInFullscreen) {
-            (webView.webChromeClient as WebChromeClient).onHideCustomView()
+            webView.webChromeClient?.onHideCustomView()
+            println("Exiting fullscreen mode on destroy")
         }
 
-        // Stop and destroy the WebView
-        webView.stopLoading() // Stop any ongoing loading
+        webView.stopLoading()
         webView.evaluateJavascript(
             """
             (function() {
@@ -515,31 +708,14 @@ class WebViewFragment : Fragment() {
         )
         webView.clearHistory()
         webView.clearCache(true)
-        webView.loadUrl("about:blank") // Load a blank page to stop any activity
+        webView.loadUrl("about:blank")
         webView.onPause()
         webView.removeAllViews()
         webView.destroy()
 
-        // Clean up the fullscreen container
         fullscreenContainer.removeAllViews()
-        activity?.findViewById<ViewGroup>(android.R.id.content)?.removeView(fullscreenContainer)
+        requireActivity().findViewById<ViewGroup>(android.R.id.content)?.removeView(fullscreenContainer)
 
         println("WebViewFragment: onDestroy called, WebView destroyed")
-    }
-
-    // Handle back button press
-    fun onBackPressed(): Boolean {
-        // If in fullscreen mode, exit fullscreen
-        if (isInFullscreen) {
-            (webView.webChromeClient as WebChromeClient).onHideCustomView()
-            return true
-        }
-        // If can go back in WebView history
-        return if (webView.canGoBack()) {
-            webView.goBack()
-            true
-        } else {
-            false
-        }
     }
 }
