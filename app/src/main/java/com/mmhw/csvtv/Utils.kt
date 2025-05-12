@@ -1,142 +1,70 @@
 package com.mmhw.csvtv
 
 import android.content.Context
-import android.net.Uri
-import android.util.Log
 import com.opencsv.CSVReader
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import java.io.File
 import java.io.StringReader
-import java.security.SecureRandom
-import java.security.cert.X509Certificate
-import javax.net.ssl.SSLContext
-import javax.net.ssl.TrustManager
-import javax.net.ssl.X509TrustManager
+import android.net.Uri
+import android.util.Log
+import java.io.IOException
 
 object Utils {
-    private val client = OkHttpClient()
-    private val insecureClient = createInsecureOkHttpClient()
-
-    private fun createInsecureOkHttpClient(): OkHttpClient {
-        val trustAllCerts = object : X509TrustManager {
-            override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
-            override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
-            override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
-        }
-
-        val sslContext = SSLContext.getInstance("TLS")
-        sslContext.init(null, arrayOf<TrustManager>(trustAllCerts), SecureRandom())
-
-        return OkHttpClient.Builder()
-            .sslSocketFactory(sslContext.socketFactory, trustAllCerts)
-            .hostnameVerifier { _, _ -> true }
-            .build()
-    }
+    private val client = OkHttpClient.Builder()
+        .followRedirects(true)
+        .followSslRedirects(true)
+        .connectTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
+        .build()
 
     fun fetchSheetData(context: Context, sheetLink: String, callback: (List<Video>, String?) -> Unit) {
-        when {
-            sheetLink.startsWith("android.resource://") -> {
-                try {
-                    Log.d("Utils", "Reading local CSV from: $sheetLink")
-                    val uri = Uri.parse(sheetLink)
-                    val inputStream = context.contentResolver.openInputStream(uri)
-                    if (inputStream == null) {
-                        Log.e("Utils", "Failed to open input stream for URI: $sheetLink")
-                        callback(emptyList(), "Failed to read local CSV: Input stream is null")
-                        return
-                    }
-                    val csvData = inputStream.bufferedReader().use { it.readText() }
-                    inputStream.close()
-                    Log.d("Utils", "Successfully read local CSV data: ${csvData.take(100)}...")
-                    parseCsvData(csvData, callback)
-                } catch (e: Exception) {
-                    Log.e("Utils", "Error reading local CSV", e)
-                    callback(emptyList(), "Failed to read local CSV: ${e.message}")
+        if (sheetLink.startsWith("android.resource://")) {
+            // Handle local raw resource
+            try {
+                Log.d("Utils", "Reading local CSV from: $sheetLink")
+                val uri = Uri.parse(sheetLink)
+                val inputStream = context.contentResolver.openInputStream(uri)
+                if (inputStream == null) {
+                    Log.e("Utils", "Failed to open input stream for URI: $sheetLink")
+                    callback(emptyList(), "Failed to read local CSV: Input stream is null")
+                    return
                 }
+                val csvData = inputStream.bufferedReader().use { it.readText() }
+                inputStream.close()
+                Log.d("Utils", "Successfully read local CSV data: ${csvData.take(100)}...")
+                parseCsvData(csvData, callback)
+            } catch (e: Exception) {
+                Log.e("Utils", "Error reading local CSV", e)
+                callback(emptyList(), "Failed to read local CSV: ${e.message}")
             }
-            sheetLink.startsWith("content://") -> {
-                try {
-                    Log.d("Utils", "Reading local storage CSV from: $sheetLink")
-                    val uri = Uri.parse(sheetLink)
-                    val inputStream = context.contentResolver.openInputStream(uri)
-                    if (inputStream == null) {
-                        Log.e("Utils", "Failed to open input stream for URI: $sheetLink")
-                        callback(emptyList(), "Failed to read local CSV: Input stream is null")
-                        return
-                    }
-                    val csvData = inputStream.bufferedReader().use { it.readText() }
-                    inputStream.close()
-                    Log.d("Utils", "Successfully read local storage CSV data: ${csvData.take(100)}...")
-                    parseCsvData(csvData, callback)
-                } catch (e: Exception) {
-                    Log.e("Utils", "Error reading local storage CSV", e)
-                    callback(emptyList(), "Failed to read local CSV: ${e.message}")
-                }
-            }
-            sheetLink.startsWith("file://") -> {
-                try {
-                    Log.d("Utils", "Reading file system CSV from: $sheetLink")
-                    val file = File(Uri.parse(sheetLink).path ?: return)
-                    if (!file.exists() || !file.canRead()) {
-                        Log.e("Utils", "File does not exist or is not readable: $sheetLink")
-                        callback(emptyList(), "Failed to read file: File does not exist or is not readable")
-                        return
-                    }
-                    val csvData = file.readText()
-                    Log.d("Utils", "Successfully read file system CSV data: ${csvData.take(100)}...")
-                    parseCsvData(csvData, callback)
-                } catch (e: Exception) {
-                    Log.e("Utils", "Error reading file system CSV", e)
-                    callback(emptyList(), "Failed to read file: ${e.message}")
-                }
-            }
-            else -> {
-                val request = Request.Builder().url(sheetLink).build()
-                client.newCall(request).enqueue(object : okhttp3.Callback {
-                    override fun onFailure(call: okhttp3.Call, e: java.io.IOException) {
-                        Log.e("Utils", "Failed to fetch remote CSV", e)
-                        if (e is javax.net.ssl.SSLHandshakeException && e.message?.contains("CertificateNotYetValidException") == true) {
-                            Log.d("Utils", "Retrying with insecure client due to certificate validity issue")
-                            insecureClient.newCall(request).enqueue(object : okhttp3.Callback {
-                                override fun onFailure(call: okhttp3.Call, e: java.io.IOException) {
-                                    Log.e("Utils", "Insecure client failed to fetch remote CSV", e)
-                                    callback(emptyList(), "Failed to fetch sheet data: ${e.message}. Please check your device's date and time settings.")
-                                }
+        } else {
+            // Handle remote URL
+            val request = Request.Builder().url(sheetLink).build()
 
-                                override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
-                                    if (!response.isSuccessful) {
-                                        Log.e("Utils", "Insecure client remote CSV fetch failed: ${response.message}")
-                                        callback(emptyList(), "Failed to fetch sheet data: ${response.message}. Please check your device's date and time settings.")
-                                        return
-                                    }
-                                    val csvData = response.body?.string() ?: ""
-                                    Log.d("Utils", "Successfully fetched remote CSV data with insecure client: ${csvData.take(100)}...")
-                                    parseCsvData(csvData, callback)
-                                }
-                            })
-                        } else {
-                            callback(emptyList(), "Failed to fetch sheet data: ${e.message}")
-                        }
+            client.newCall(request).enqueue(object : okhttp3.Callback {
+                override fun onFailure(call: okhttp3.Call, e: IOException) {
+                    Log.e("Utils", "Failed to fetch remote CSV", e)
+                    callback(emptyList(), "Failed to fetch sheet data: ${e.message}")
+                }
+
+                override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
+                    if (!response.isSuccessful) {
+                        Log.e("Utils", "Remote CSV fetch failed: ${response.message}")
+                        callback(emptyList(), "Failed to fetch sheet data: ${response.message}")
+                        return
                     }
 
-                    override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
-                        if (!response.isSuccessful) {
-                            Log.e("Utils", "Remote CSV fetch failed: ${response.message}")
-                            callback(emptyList(), "Failed to fetch sheet data: ${response.message}")
-                            return
-                        }
-                        val csvData = response.body?.string() ?: ""
-                        Log.d("Utils", "Successfully fetched remote CSV data: ${csvData.take(100)}...")
-                        parseCsvData(csvData, callback)
-                    }
-                })
-            }
+                    val csvData = response.body?.string() ?: ""
+                    Log.d("Utils", "Successfully fetched remote CSV data: ${csvData.take(100)}...")
+                    parseCsvData(csvData, callback)
+                }
+            })
         }
     }
 
-    fun parseCsvData(csvData: String, callback: (List<Video>, String?) -> Unit) {
+    private fun parseCsvData(csvData: String, callback: (List<Video>, String?) -> Unit) {
         val videos = mutableListOf<Video>()
+
         try {
             val csvReader = CSVReader(StringReader(csvData))
             val headers = csvReader.readNext()
@@ -178,68 +106,64 @@ object Utils {
     }
 
     fun isVideoStream(url: String): Boolean {
-        return url.endsWith(".mp4") || url.endsWith(".m3u8") || url.startsWith("rtmp://") ||
-                url.endsWith(".m3u") || url.endsWith(".ts")
+        val normalizedUrl = url.trim().lowercase()
+        return normalizedUrl.endsWith(".mp4") ||
+                normalizedUrl.endsWith(".m3u8") ||
+                normalizedUrl.endsWith(".ts") ||
+                normalizedUrl.startsWith("rtmp://") ||
+                normalizedUrl.contains(".m3u8?")
     }
 
-    fun fetchM3uData(context: Context, m3uUrl: String, callback: (List<Video>, String?) -> Unit) {
-        if (m3uUrl.startsWith("android.resource://")) {
-            try {
-                val uri = Uri.parse(m3uUrl)
-                val inputStream = context.contentResolver.openInputStream(uri)
-                if (inputStream == null) {
-                    callback(emptyList(), "Failed to read local M3U: Input stream is null")
+    /**
+     * Resolves a potentially shortened URL to its final destination.
+     * @param url The input URL (e.g., shortened or direct).
+     * @param callback Callback to return the resolved URL or an error message.
+     */
+    private val urlCache = mutableMapOf<String, String>()
+
+    fun resolveUrl(url: String, callback: (String?, String?) -> Unit) {
+        if (url.isBlank()) {
+            callback(null, "URL is empty")
+            return
+        }
+
+        // Skip resolution if already a video stream
+        if (isVideoStream(url)) {
+            Log.d("Utils", "URL is already a video stream: $url")
+            callback(url, null)
+            return
+        }
+
+        // Check cache first
+        urlCache[url]?.let {
+            Log.d("Utils", "Using cached resolved URL: $url -> $it")
+            callback(it, null)
+            return
+        }
+
+        val request = Request.Builder()
+            .url(url)
+            .head()
+            .build()
+
+        client.newCall(request).enqueue(object : okhttp3.Callback {
+            override fun onFailure(call: okhttp3.Call, e: IOException) {
+                Log.e("Utils", "Failed to resolve URL: $url", e)
+                callback(null, "Failed to resolve URL: ${e.message}")
+            }
+
+            override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
+                if (!response.isSuccessful) {
+                    Log.e("Utils", "URL resolution failed for $url: ${response.message}")
+                    callback(null, "Failed to resolve URL: ${response.message}")
                     return
                 }
-                val m3uData = inputStream.bufferedReader().use { it.readText() }
-                inputStream.close()
-                parseM3uData(m3uData, callback)
-            } catch (e: Exception) {
-                callback(emptyList(), "Failed to read local M3U: ${e.message}")
+
+                // The final URL after redirects
+                val resolvedUrl = response.request.url.toString()
+                Log.d("Utils", "Resolved URL: $url -> $resolvedUrl")
+                callback(resolvedUrl, null)
             }
-        } else {
-            val request = Request.Builder().url(m3uUrl).build()
-            client.newCall(request).enqueue(object : okhttp3.Callback {
-                override fun onFailure(call: okhttp3.Call, e: java.io.IOException) {
-                    callback(emptyList(), "Failed to fetch M3U: ${e.message}")
-                }
-
-                override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
-                    if (!response.isSuccessful) {
-                        callback(emptyList(), "Failed to fetch M3U: ${response.message}")
-                        return
-                    }
-                    val m3uData = response.body?.string() ?: ""
-                    parseM3uData(m3uData, callback)
-                }
-            })
-        }
-    }
-
-    private fun parseM3uData(m3uData: String, callback: (List<Video>, String?) -> Unit) {
-        val videos = mutableListOf<Video>()
-        try {
-            val lines = m3uData.lines()
-            var currentTitle: String? = null
-
-            for (line in lines) {
-                val trimmedLine = line.trim()
-                if (trimmedLine.isEmpty() || trimmedLine.startsWith("#EXTM3U")) {
-                    continue
-                }
-                if (trimmedLine.startsWith("#EXTINF")) {
-                    val titleMatch = Regex(".*,(.*)$").find(trimmedLine)
-                    currentTitle = titleMatch?.groupValues?.get(1) ?: "Unnamed Stream"
-                } else if (!trimmedLine.startsWith("#") && trimmedLine.isNotBlank()) {
-                    if (currentTitle != null) {
-                        videos.add(Video(currentTitle, trimmedLine, null, "M3U Streams"))
-                        currentTitle = null
-                    }
-                }
-            }
-            callback(videos, null)
-        } catch (e: Exception) {
-            callback(emptyList(), "Error parsing M3U: ${e.message}")
-        }
+        })
     }
 }
