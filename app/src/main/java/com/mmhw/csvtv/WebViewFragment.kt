@@ -131,13 +131,15 @@ class WebViewFragment : Fragment() {
                 updateContentDimensions()
                 injectFullscreenFix()
                 injectMutationObserver()
-                injectInteractionFix()
+                println("Page finished loading: $url")
             }
 
             override fun onReceivedError(view: WebView?, errorCode: Int, description: String?, failingUrl: String?) {
                 println("WebViewFragment: Error loading page: $description (code: $errorCode)")
                 showToast("Failed to load page: $description")
-                parentFragmentManager.popBackStack()
+                handler.postDelayed({
+                    parentFragmentManager.popBackStack()
+                }, 2000L) // Delay to show toast
             }
         }
 
@@ -190,7 +192,7 @@ class WebViewFragment : Fragment() {
 
                 fullscreenContainer.visibility = View.GONE
                 webView.visibility = View.VISIBLE
-                container.visibility = View.VISIBLE
+                container.visibility = View.VISIBLE // Fixed: Changed VISIBLE to View.VISIBLE
 
                 fullscreenContainer.removeView(customView)
 
@@ -200,14 +202,13 @@ class WebViewFragment : Fragment() {
                 customViewCallback = null
 
                 container.requestFocus()
+                updateContentDimensions()
                 println("Exited fullscreen mode")
             }
         }
 
         webView.setLayerType(View.LAYER_TYPE_HARDWARE, null)
-
         webView.loadUrl(url)
-
         webView.isFocusable = false
         webView.isFocusableInTouchMode = false
     }
@@ -217,15 +218,15 @@ class WebViewFragment : Fragment() {
             (function() {
                 var videoElements = document.getElementsByTagName('video');
                 for (var i = 0; i < videoElements.length; i++) {
-                    videoElements[i].addEventListener('webkitBeginFullScreen', function() {
+                    videoElements[i].addEventListener('webkitbeginfullscreen', function() {
                         console.log('Video entered fullscreen');
                     });
-                    var fullscreenButtons = document.querySelectorAll('.fullscreen-button, .ytp-fullscreen-button, [aria-label="Fullscreen"]');
-                    for (var j = 0; j < fullscreenButtons.length; j++) {
-                        fullscreenButtons[j].addEventListener('click', function() {
-                            console.log('Fullscreen button clicked');
-                        });
-                    }
+                    videoElements[i].addEventListener('play', function() {
+                        console.log('Video playback started');
+                    });
+                    videoElements[i].addEventListener('error', function(e) {
+                        console.log('Video playback error: ' + e.message);
+                    });
                 }
                 var style = document.createElement('style');
                 style.textContent = 'video { transform: translateZ(0); }';
@@ -240,8 +241,10 @@ class WebViewFragment : Fragment() {
         val js = """
             (function() {
                 function applyInteractionStyles(element) {
-                    element.style.setProperty('pointer-events', 'auto', 'important');
-                    element.style.setProperty('z-index', '10000', 'important');
+                    if (!element.style.zIndex || parseInt(element.style.zIndex) < 1000) {
+                        element.style.setProperty('pointer-events', 'auto', 'important');
+                        element.style.setProperty('z-index', '1000', 'important');
+                    }
                 }
                 var elements = document.querySelectorAll('a[href], button, [role="button"], [onclick], [class*="page"], [class*="nav"] a');
                 for (var i = 0; i < elements.length; i++) {
@@ -257,13 +260,16 @@ class WebViewFragment : Fragment() {
             (function() {
                 const observer = new MutationObserver(function(mutations) {
                     mutations.forEach(function(mutation) {
-                        window.AndroidBridge.updateDimensions();
+                        if (mutation.type === 'childList' || mutation.type === 'attributes') {
+                            window.AndroidBridge.updateDimensions();
+                        }
                     });
                 });
                 observer.observe(document.body, {
                     childList: true,
                     subtree: true,
-                    attributes: true
+                    attributes: true,
+                    attributeFilter: ['style', 'class']
                 });
             })();
         """.trimIndent()
@@ -280,7 +286,6 @@ class WebViewFragment : Fragment() {
                     if (now - fragment.lastDimensionUpdate > fragment.dimensionUpdateDebounce) {
                         fragment.lastDimensionUpdate = now
                         fragment.updateContentDimensions()
-                        fragment.injectInteractionFix()
                         println("Content dimensions updated due to DOM change")
                     }
                 }
@@ -319,28 +324,24 @@ class WebViewFragment : Fragment() {
                 let fixedElementsDetails = [];
                 for (let el of elements) {
                     const style = window.getComputedStyle(el);
-                    if (style.position === 'fixed' || style.position === 'sticky') {
-                        if (style.display !== 'none' && style.visibility !== 'hidden') {
-                            const rect = el.getBoundingClientRect();
-                            const elBottom = rect.bottom + window.scrollY;
-                            maxHeight = Math.max(maxHeight, elBottom);
-                            fixedHeight = Math.max(fixedHeight, rect.height);
-                            const bottomValue = parseFloat(style.bottom) || 0;
-                            if ((el.tagName === 'DIV' || el.tagName === 'NAV') && bottomValue >= 0 && bottomValue < 50 && rect.height < 100) {
-                                bottomNavHeight = Math.max(bottomNavHeight, rect.height);
-                            }
-                            fixedElementsDetails.push({
-                                tag: el.tagName,
-                                height: rect.height,
-                                bottom: rect.bottom,
-                                position: style.position,
-                                styleBottom: style.bottom,
-                                zIndex: style.zIndex,
-                                class: el.className,
-                                display: style.display,
-                                visibility: style.visibility
-                            });
+                    if ((style.position === 'fixed' || style.position === 'sticky') && style.display !== 'none' && style.visibility !== 'hidden') {
+                        const rect = el.getBoundingClientRect();
+                        const elBottom = rect.bottom + window.scrollY;
+                        maxHeight = Math.max(maxHeight, elBottom);
+                        fixedHeight = Math.max(fixedHeight, rect.height);
+                        const bottomValue = parseFloat(style.bottom) || 0;
+                        if ((el.tagName === 'DIV' || el.tagName === 'NAV') && bottomValue >= 0 && bottomValue < 50 && rect.height < 100) {
+                            bottomNavHeight = Math.max(bottomNavHeight, rect.height);
                         }
+                        fixedElementsDetails.push({
+                            tag: el.tagName,
+                            height: rect.height,
+                            bottom: rect.bottom,
+                            position: style.position,
+                            styleBottom: style.bottom,
+                            zIndex: style.zIndex,
+                            class: el.className
+                        });
                     }
                 }
 
@@ -372,7 +373,7 @@ class WebViewFragment : Fragment() {
                     contentWidth = webView.width
                     contentHeight = contentHeightFromWebView
                     bottomNavHeight = 0f
-                    println("Failed to parse content dimensions: ${e.message}, using defaults: width=$contentWidth, height=$contentHeight, contentHeightFromWebView=$contentHeightFromWebView, containerHeight=${container.height}")
+                    println("Failed to parse content dimensions: ${e.message}, using defaults: width=$contentWidth, height=$contentHeight, contentHeightFromWebView=$contentHeightFromWebView")
                 }
             }
         )
@@ -395,14 +396,18 @@ class WebViewFragment : Fragment() {
                             if (videos.length > 0) {
                                 if (videos[0].paused) {
                                     videos[0].play();
+                                    return 'play';
                                 } else {
                                     videos[0].pause();
+                                    return 'pause';
                                 }
-                                return true;
                             }
-                            return false;
+                            return 'no_video';
                         })()
-                        """, null
+                        """.trimIndent(),
+                        ValueCallback { value ->
+                            println("Fullscreen video action: $value")
+                        }
                     )
                     return true
                 }
@@ -465,13 +470,14 @@ class WebViewFragment : Fragment() {
             (function() {
                 var x = ${pointerX.toInt()};
                 var y = ${adjustedY.toInt()};
-                var selectors = ['a[href]', 'button', '[role="button"]', '[onclick]', '[class*="page"]', '[class*="nav"] a'];
-                for (var i = 0; i < selectors.length; i++) {
-                    var elements = document.querySelectorAll(selectors[i]);
-                    for (var j = 0; j < elements.length; j++) {
-                        var rect = elements[j].getBoundingClientRect();
-                        if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
-                            return elements[j].tagName + '|' + elements[j].className + '|' + rect.top + '|' + ((rect.left + rect.right) / 2);
+                var selectors = ['a[href]', 'button', '[role="button"]', '[onclick]', '[class*="play"]', '[class*="pause"]', '[class*="video"]', '[class*="nav"] a'];
+                for (var selector of selectors) {
+                    var elements = document.querySelectorAll(selector);
+                    for (var el of elements) {
+                        var rect = el.getBoundingClientRect();
+                        if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom &&
+                            el.offsetWidth > 0 && el.offsetHeight > 0) {
+                            return el.tagName + '|' + el.className + '|' + rect.top + '|' + ((rect.left + rect.right) / 2);
                         }
                     }
                 }
@@ -482,10 +488,10 @@ class WebViewFragment : Fragment() {
                 try {
                     if (value.isNotEmpty() && value != "\"\"") {
                         val parts = value.replace("\"", "").split("|")
-                        if (parts.size >= 2) {
+                        if (parts.size >= 4) {
                             interactiveElement = "${parts[0]}|${parts[1]}"
-                            interactiveElementY = parts.getOrNull(2)?.toFloatOrNull() ?: 0f
-                            interactiveElementX = parts.getOrNull(3)?.toFloatOrNull() ?: pointerX
+                            interactiveElementY = parts[2].toFloatOrNull() ?: 0f
+                            interactiveElementX = parts[3].toFloatOrNull() ?: pointerX
                         }
                     }
                     println("Interactive element check at x=$pointerX, y=$pointerY, adjustedY=$adjustedY, element=$interactiveElement, elementY=$interactiveElementY, elementX=$interactiveElementX, rawValue=$value")
@@ -503,12 +509,11 @@ class WebViewFragment : Fragment() {
                     var x = ${pointerX.toInt()};
                     var y = ${adjustedY.toInt()};
                     var element = document.elementFromPoint(x, y);
-                    if (element) {
+                    if (element && element.offsetWidth > 0 && element.offsetHeight > 0) {
                         var events = [
                             new MouseEvent('mouseover', { view: window, bubbles: true, cancelable: true, clientX: x, clientY: y }),
                             new MouseEvent('mouseenter', { view: window, bubbles: true, cancelable: true, clientX: x, clientY: y }),
                             new MouseEvent('mousemove', { view: window, bubbles: true, cancelable: true, clientX: x, clientY: y }),
-                            new MouseEvent('mousehover', { view: window, bubbles: true, cancelable: true, clientX: x, clientY: y }),
                             new PointerEvent('pointerover', { view: window, bubbles: true, cancelable: true, clientX: x, clientY: y }),
                             new PointerEvent('pointerenter', { view: window, bubbles: true, cancelable: true, clientX: x, clientY: y }),
                             new PointerEvent('pointermove', { view: window, bubbles: true, cancelable: true, clientX: x, clientY: y })
@@ -520,9 +525,9 @@ class WebViewFragment : Fragment() {
                 })();
                 """.trimIndent(),
                 ValueCallback { value ->
-                    if (value == "\"\"" && hoverAttempt < 3) {
+                    if (value == "\"\"" && hoverAttempt < 2) {
                         hoverAttempt++
-                        jsHandler.postDelayed({ tryHover() }, 100)
+                        jsHandler.postDelayed({ tryHover() }, 50)
                     } else {
                         println("Hover events simulated at x=$pointerX, y=$pointerY, adjustedY=$adjustedY, element=$value, attempt=$hoverAttempt")
                     }
@@ -531,6 +536,7 @@ class WebViewFragment : Fragment() {
         }
         jsHandler.post { tryHover() }
 
+        // Horizontal scrolling
         if (deltaX < 0 && pointerX < scrollThreshold && webView.scrollX > 0) {
             val newScrollX = (webView.scrollX - pointerSpeed.toInt()).coerceAtLeast(0)
             webView.scrollTo(newScrollX, webView.scrollY)
@@ -544,34 +550,35 @@ class WebViewFragment : Fragment() {
             println("Scrolled right: scrollX=${webView.scrollX}, pointerX=$pointerX, deltaX=$deltaX")
         }
 
+        // Vertical scrolling
+        val calculatedMaxScrollY = (contentHeight - container.height).toInt().coerceAtLeast(0)
+        val maxScrollY = maxOf(calculatedMaxScrollY, contentHeightFromWebView)
         if (deltaY < 0 && webView.scrollY > 0) {
             val newScrollY = (webView.scrollY - pointerSpeed.toInt()).coerceAtLeast(0)
             webView.scrollTo(webView.scrollX, newScrollY)
             pointerY = (pointerY + deltaY).coerceAtLeast(0f)
             if (interactiveElement.isNotEmpty()) {
-                pointerY = (interactiveElementY - webView.scrollY).coerceAtLeast(0f).coerceAtMost(container.height.toFloat() - pointer.height)
-                pointerX = interactiveElementX.coerceAtLeast(0f).coerceAtMost(container.width.toFloat() - pointer.width)
-                println("Adjusted pointer for interactive element: pointerX=$pointerX, pointerY=$pointerY, interactiveElement=$interactiveElement, elementX=$interactiveElementX, elementY=$interactiveElementY")
+                pointerY = (interactiveElementY - webView.scrollY).coerceAtLeast(0f).coerceAtMost(container.height.toFloat() - pointer.height.toFloat())
+                pointerX = interactiveElementX.coerceAtLeast(0f).coerceAtMost(container.width.toFloat() - pointer.width.toFloat())
+                println("Adjusted pointer for interactive element: pointerX=$pointerX, pointerY=$pointerY, interactiveElement=$interactiveElement")
             }
-            println("Scrolled up: scrollY=${webView.scrollY}, pointerX=$pointerX, pointerY=$pointerY, deltaY=$deltaY, containerHeight=${container.height}, interactiveElement=$interactiveElement")
+            println("Scrolled up: scrollY=${webView.scrollY}, pointerX=$pointerX, pointerY=$pointerY, deltaY=$deltaY")
             updateContentDimensions()
         } else if (deltaY > 0) {
-            val calculatedMaxScrollY = (contentHeight - container.height).toInt().coerceAtLeast(0)
-            val maxScrollY = maxOf(calculatedMaxScrollY, contentHeightFromWebView)
             val newScrollY = (webView.scrollY + pointerSpeed.toInt()).coerceAtMost(maxScrollY)
             webView.scrollTo(webView.scrollX, newScrollY)
-            pointerY = (pointerY + deltaY).coerceAtMost(container.height.toFloat() - pointer.height)
+            pointerY = (pointerY + deltaY).coerceAtMost(container.height.toFloat() - pointer.height.toFloat())
             if (interactiveElement.isNotEmpty()) {
-                pointerY = (interactiveElementY - webView.scrollY).coerceAtLeast(0f).coerceAtMost(container.height.toFloat() - pointer.height)
-                pointerX = interactiveElementX.coerceAtLeast(0f).coerceAtMost(container.width.toFloat() - pointer.width)
-                println("Adjusted pointer for interactive element: pointerX=$pointerX, pointerY=$pointerY, interactiveElement=$interactiveElement, elementX=$interactiveElementX, elementY=$interactiveElementY")
+                pointerY = (interactiveElementY - webView.scrollY).coerceAtLeast(0f).coerceAtMost(container.height.toFloat() - pointer.height.toFloat())
+                pointerX = interactiveElementX.coerceAtLeast(0f).coerceAtMost(container.width.toFloat() - pointer.width.toFloat())
+                println("Adjusted pointer for interactive element: pointerX=$pointerX, pointerY=$pointerY, interactiveElement=$interactiveElement")
             }
-            println("Scrolled down: scrollY=${webView.scrollY}, pointerX=$pointerX, pointerY=$pointerY, maxScrollY=$maxScrollY, contentHeight=$contentHeight, contentHeightFromWebView=$contentHeightFromWebView, scaleY=${webView.scaleY}, deltaY=$deltaY, bottomNavHeight=$bottomNavHeight, containerHeight=${container.height}, interactiveElement=$interactiveElement")
+            println("Scrolled down: scrollY=${webView.scrollY}, pointerX=$pointerX, pointerY=$pointerY, maxScrollY=$maxScrollY, contentHeight=$contentHeight, contentHeightFromWebView=$contentHeightFromWebView, deltaY=$deltaY")
             updateContentDimensions()
         }
 
         pointerX = pointerX.coerceIn(0f, container.width.toFloat() - pointer.width.toFloat())
-        pointerY = pointerY.coerceIn(0f, container.height.toFloat())
+        pointerY = pointerY.coerceIn(0f, container.height.toFloat() - pointer.height.toFloat())
 
         updatePointerPosition()
         resetPointerHideTimer()
@@ -587,6 +594,7 @@ class WebViewFragment : Fragment() {
     private fun showPointer() {
         pointer.visibility = View.VISIBLE
         println("Pointer shown: visibility=${pointer.visibility}")
+        resetPointerHideTimer()
     }
 
     private fun hidePointer() {
@@ -596,7 +604,6 @@ class WebViewFragment : Fragment() {
 
     private fun resetPointerHideTimer() {
         pointerHideHandler.removeCallbacksAndMessages(null)
-        println("Pointer hide timer reset")
         pointerHideHandler.postDelayed({ hidePointer() }, pointerHideDelay)
     }
 
@@ -613,9 +620,13 @@ class WebViewFragment : Fragment() {
                 var x = $x;
                 var y = $adjustedY;
                 var element = document.elementFromPoint(x, y);
-                if (element) {
-                    var clickEvent = new MouseEvent('click', { view: window, bubbles: true, cancelable: true, clientX: x, clientY: y });
-                    element.dispatchEvent(clickEvent);
+                if (element && element.offsetWidth > 0 && element.offsetHeight > 0) {
+                    var events = [
+                        new MouseEvent('mousedown', { view: window, bubbles: true, cancelable: true, clientX: x, clientY: y }),
+                        new MouseEvent('mouseup', { view: window, bubbles: true, cancelable: true, clientX: x, clientY: y }),
+                        new MouseEvent('click', { view: window, bubbles: true, cancelable: true, clientX: x, clientY: y })
+                    ];
+                    events.forEach(event => element.dispatchEvent(event));
                     return element.tagName + '|' + element.className;
                 }
                 return 'No element found';
@@ -629,23 +640,17 @@ class WebViewFragment : Fragment() {
             }
         )
 
-        println("Before dispatchTouchEvent: containerHasFocus=${container.hasFocus()}")
-
         val downTime = System.currentTimeMillis()
         val eventTime = downTime + 100
-
         val downEvent = MotionEvent.obtain(
             downTime, eventTime, MotionEvent.ACTION_DOWN, x.toFloat(), pointerY.toFloat(), 0
         )
-
         val upEvent = MotionEvent.obtain(
             downTime, eventTime, MotionEvent.ACTION_UP, x.toFloat(), pointerY.toFloat(), 0
         )
 
         webView.dispatchTouchEvent(downEvent)
         webView.dispatchTouchEvent(upEvent)
-
-        println("After dispatchTouchEvent: containerHasFocus=${container.hasFocus()}")
 
         container.requestFocus()
         println("Focus restored to container after click")
@@ -658,7 +663,9 @@ class WebViewFragment : Fragment() {
 
     private fun showToast(message: String) {
         activity?.runOnUiThread {
-            Toast.makeText(requireContext(), message, Toast.LENGTH_LONG).show()
+            if (isAdded) {
+                Toast.makeText(requireContext(), message, Toast.LENGTH_LONG).show()
+            }
         }
     }
 
@@ -682,6 +689,7 @@ class WebViewFragment : Fragment() {
         super.onResume()
         webView.onResume()
         container.requestFocus()
+        updateContentDimensions()
         println("WebViewFragment: onResume called, WebView resumed")
     }
 
@@ -692,7 +700,6 @@ class WebViewFragment : Fragment() {
 
         if (isInFullscreen) {
             webView.webChromeClient?.onHideCustomView()
-            println("Exiting fullscreen mode on destroy")
         }
 
         webView.stopLoading()
@@ -717,5 +724,22 @@ class WebViewFragment : Fragment() {
         requireActivity().findViewById<ViewGroup>(android.R.id.content)?.removeView(fullscreenContainer)
 
         println("WebViewFragment: onDestroy called, WebView destroyed")
+    }
+
+    fun onBackPressed(): Boolean {
+        if (isInFullscreen) {
+            webView.webChromeClient?.onHideCustomView()
+            return true
+        }
+        return if (webView.canGoBack()) {
+            webView.goBack()
+            true
+        } else {
+            false
+        }
+    }
+
+    companion object {
+        private val handler = Handler(Looper.getMainLooper())
     }
 }
