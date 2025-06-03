@@ -124,6 +124,7 @@ class WebViewFragment : Fragment() {
         }
 
         webView.addJavascriptInterface(AndroidBridge(this), "AndroidBridge")
+        webView.keepScreenOn = true
 
         webView.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView?, url: String?) {
@@ -192,7 +193,7 @@ class WebViewFragment : Fragment() {
 
                 fullscreenContainer.visibility = View.GONE
                 webView.visibility = View.VISIBLE
-                container.visibility = View.VISIBLE // Fixed: Changed VISIBLE to View.VISIBLE
+                container.visibility = View.VISIBLE
 
                 fullscreenContainer.removeView(customView)
 
@@ -672,6 +673,7 @@ class WebViewFragment : Fragment() {
     override fun onPause() {
         super.onPause()
         webView.onPause()
+        webView.keepScreenOn = false
         webView.evaluateJavascript(
             """
             (function() {
@@ -695,6 +697,7 @@ class WebViewFragment : Fragment() {
 
     override fun onDestroy() {
         super.onDestroy()
+        webView.keepScreenOn = false
         pointerHideHandler.removeCallbacksAndMessages(null)
         jsHandler.removeCallbacksAndMessages(null)
 

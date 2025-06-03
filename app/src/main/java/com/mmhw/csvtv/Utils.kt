@@ -8,6 +8,11 @@ import java.io.StringReader
 import android.net.Uri
 import android.util.Log
 import java.io.IOException
+import java.security.SecureRandom
+import java.security.cert.X509Certificate
+import javax.net.ssl.SSLContext
+import javax.net.ssl.TrustManager
+import javax.net.ssl.X509TrustManager
 
 object Utils {
     private val client = OkHttpClient.Builder()
@@ -15,6 +20,8 @@ object Utils {
         .followSslRedirects(true)
         .connectTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
         .readTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
+        .sslSocketFactory(createUnsafeSslContext().socketFactory, createUnsafeTrustManager())
+        .hostnameVerifier { _, _ -> true }
         .build()
 
     fun fetchSheetData(context: Context, sheetLink: String, callback: (List<Video>, String?) -> Unit) {
@@ -105,39 +112,37 @@ object Utils {
         }
     }
 
-    fun isVideoStream(url: String): Boolean {
+    fun isVideoStream(url: String, contentType: String?): Boolean {
         val normalizedUrl = url.trim().lowercase()
-        return normalizedUrl.endsWith(".mp4") ||
-                normalizedUrl.endsWith(".m3u8") ||
-                normalizedUrl.endsWith(".ts") ||
-                normalizedUrl.startsWith("rtmp://") ||
-                normalizedUrl.contains(".m3u8?")
+        // Check for common video file extensions in the URL itself
+        if (normalizedUrl.endsWith(".mp4") ||
+            normalizedUrl.endsWith(".m3u8") ||
+            normalizedUrl.endsWith(".ts") ||
+            normalizedUrl.startsWith("rtmp://") ||
+            normalizedUrl.contains(".m3u8?")) {
+            return true
+        }
+
+        // Check Content-Type header if available
+        contentType?.lowercase()?.let {
+            return it.contains("video/") || // General video content type
+                    it.contains("application/x-mpegurl") || // M3U8 specific content type
+                    it.contains("application/vnd.apple.mpegurl") // Another M3U8 specific content type
+        }
+        return false
     }
 
-    /**
-     * Resolves a potentially shortened URL to its final destination.
-     * @param url The input URL (e.g., shortened or direct).
-     * @param callback Callback to return the resolved URL or an error message.
-     */
-    private val urlCache = mutableMapOf<String, String>()
+    private val urlCache = mutableMapOf<String, Pair<String, String?>>()
 
-    fun resolveUrl(url: String, callback: (String?, String?) -> Unit) {
+    fun resolveUrl(url: String, callback: (String?, String?, String?) -> Unit) {
         if (url.isBlank()) {
-            callback(null, "URL is empty")
+            callback(null, null, "URL is empty")
             return
         }
 
-        // Skip resolution if already a video stream
-        if (isVideoStream(url)) {
-            Log.d("Utils", "URL is already a video stream: $url")
-            callback(url, null)
-            return
-        }
-
-        // Check cache first
-        urlCache[url]?.let {
-            Log.d("Utils", "Using cached resolved URL: $url -> $it")
-            callback(it, null)
+        urlCache[url]?.let { (resolved, type) ->
+            Log.d("Utils", "Using cached resolved URL: $url -> $resolved (Type: $type)")
+            callback(resolved, type, null)
             return
         }
 
@@ -149,21 +154,78 @@ object Utils {
         client.newCall(request).enqueue(object : okhttp3.Callback {
             override fun onFailure(call: okhttp3.Call, e: IOException) {
                 Log.e("Utils", "Failed to resolve URL: $url", e)
-                callback(null, "Failed to resolve URL: ${e.message}")
+                callback(null, null, "Failed to resolve URL: ${e.message}")
             }
 
             override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
-                if (!response.isSuccessful) {
-                    Log.e("Utils", "URL resolution failed for $url: ${response.message}")
-                    callback(null, "Failed to resolve URL: ${response.message}")
+                val resolvedUrl = response.request.url.toString()
+                val contentType = response.header("Content-Type")
+                Log.d("Utils", "Resolved URL: $url -> $resolvedUrl (Content-Type: $contentType, HTTP Status: ${response.code})")
+
+                // If resolvedUrl is null or blank, it's a true resolution failure.
+                if (resolvedUrl.isNullOrBlank()) {
+                    callback(null, null, "Failed to resolve URL: No valid URL found after redirects or initial request.")
                     return
                 }
 
-                // The final URL after redirects
-                val resolvedUrl = response.request.url.toString()
-                Log.d("Utils", "Resolved URL: $url -> $resolvedUrl")
-                callback(resolvedUrl, null)
+                // If Content-Type is available and already indicates a video stream from HEAD request, we're good.
+                if (contentType != null && isVideoStream(resolvedUrl, contentType)) {
+                    urlCache[url] = Pair(resolvedUrl, contentType)
+                    callback(resolvedUrl, contentType, null) // No error
+                    return
+                }
+
+                // Otherwise, try a GET request to sniff content type or body for M3U8 patterns
+                val getRequest = Request.Builder()
+                    .url(resolvedUrl)
+                    .get()
+                    .build()
+
+                client.newCall(getRequest).enqueue(object : okhttp3.Callback {
+                    override fun onFailure(call: okhttp3.Call, e: IOException) {
+                        Log.e("Utils", "Failed to fetch GET for Content-Type check: $resolvedUrl", e)
+                        urlCache[url] = Pair(resolvedUrl, contentType)
+                        callback(resolvedUrl, contentType, "Failed to get full content for type check: ${e.message}")
+                    }
+
+                    override fun onResponse(call: okhttp3.Call, getResponse: okhttp3.Response) {
+                        val finalContentType = getResponse.header("Content-Type") ?: contentType
+                        val responseBody = getResponse.body?.string()
+
+                        val isStreamBasedOnBody = responseBody?.contains("#EXTM3U") == true || responseBody?.contains("#EXTINF") == true
+                        val finalResolvedUrl = getResponse.request.url.toString()
+
+                        val determinedContentType = if (isStreamBasedOnBody) "application/x-mpegurl" else finalContentType
+
+                        Log.d("Utils", "GET response for $resolvedUrl -> Final Content-Type: $determinedContentType, Is stream based on body: $isStreamBasedOnBody, HTTP Status: ${getResponse.code}")
+
+                        // Determine final error based on whether content was successfully retrieved/identified as stream
+                        val finalError = if (!getResponse.isSuccessful && !isStreamBasedOnBody && !isVideoStream(finalResolvedUrl, determinedContentType)) {
+                            "Content at resolved URL not successfully loaded: HTTP ${getResponse.code}"
+                        } else {
+                            null
+                        }
+
+                        urlCache[url] = Pair(finalResolvedUrl, determinedContentType)
+                        callback(finalResolvedUrl, determinedContentType, finalError)
+                    }
+                })
             }
         })
+    }
+
+
+    private fun createUnsafeSslContext(): SSLContext {
+        val sslContext = SSLContext.getInstance("TLS")
+        sslContext.init(null, arrayOf<TrustManager>(createUnsafeTrustManager()), SecureRandom())
+        return sslContext
+    }
+
+    private fun createUnsafeTrustManager(): X509TrustManager {
+        return object : X509TrustManager {
+            override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
+            override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
+            override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
+        }
     }
 }

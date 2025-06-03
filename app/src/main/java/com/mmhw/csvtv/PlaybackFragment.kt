@@ -29,6 +29,7 @@ import java.security.cert.X509Certificate
 import javax.net.ssl.SSLContext
 import javax.net.ssl.TrustManager
 import javax.net.ssl.X509TrustManager
+import java.util.concurrent.TimeUnit
 
 class PlaybackFragment : Fragment() {
     private var player: ExoPlayer? = null
@@ -37,20 +38,18 @@ class PlaybackFragment : Fragment() {
     private var errorText: TextView? = null
     private var playbackPosition: Long = 0
     private var currentMediaItem: MediaItem? = null
-    private var resolvedUrl: String? = null // Store resolved URL for retries
-    private var currentSurface: Any? = null // Track surface to prevent reloads
+    private var currentSurface: Any? = null
+    private var resolvedUrl: String? = null
 
-    // Auto-retry parameters
     private var retryCount = 0
     private val maxRetries = 3
-    private val retryDelayMs = 3000L // 3 seconds
+    private val retryDelayMs = 3000L
     private val handler = Handler(Looper.getMainLooper())
 
-    // Buffer parameters (adopted from alternative code)
-    private val minBufferMs = 60000 // 60 seconds
-    private val maxBufferMs = 120000 // 120 seconds
-    private val bufferForPlaybackMs = 5000 // 5 seconds
-    private val bufferForPlaybackAfterRebufferMs = 10000 // 10 seconds
+    private val minBufferMs = 60000
+    private val maxBufferMs = 120000
+    private val bufferForPlaybackMs = 5000
+    private val bufferForPlaybackAfterRebufferMs = 10000
 
     override fun onCreateView(
         inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
@@ -61,29 +60,25 @@ class PlaybackFragment : Fragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
 
-        val url = arguments?.getString("video_url") ?: return
+        val urlFromArgs = arguments?.getString("video_url") ?: return
         playerView = view.findViewById<PlayerView>(R.id.player_view)
         errorText = view.findViewById<TextView>(R.id.error_text)
         loadingIndicator = view.findViewById<ProgressBar>(R.id.loading_indicator)
 
-        // Center loading indicator
         (loadingIndicator?.layoutParams as? RelativeLayout.LayoutParams)?.apply {
             addRule(RelativeLayout.CENTER_IN_PARENT, RelativeLayout.TRUE)
         }
 
-        // Show loading indicator and hide player view initially
         loadingIndicator?.visibility = View.VISIBLE
         playerView?.visibility = View.GONE
         errorText?.visibility = View.GONE
 
-        // Disable player controls initially
         playerView?.useController = false
         playerView?.keepScreenOn = true
 
-        // Restore playback position
         playbackPosition = savedInstanceState?.getLong("playback_position", 0) ?: 0
-        resolvedUrl = url // Initialize resolved URL
-        initializePlayer(url)
+        resolvedUrl = urlFromArgs
+        initializePlayer(urlFromArgs)
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -92,8 +87,7 @@ class PlaybackFragment : Fragment() {
         Log.d("PlaybackFragment", "Saving playback position: ${player?.currentPosition ?: playbackPosition}")
     }
 
-    private fun initializePlayer(url: String) {
-        // Check if player and surface are valid to avoid reinitialization
+    private fun initializePlayer(urlToPlay: String) {
         val newSurface = playerView?.videoSurfaceView
         if (player != null && currentSurface == newSurface && player?.playbackState != Player.STATE_ENDED) {
             player?.seekTo(playbackPosition)
@@ -103,15 +97,12 @@ class PlaybackFragment : Fragment() {
         }
         currentSurface = newSurface
 
-        // Reset retry count only on first attempt
         if (retryCount == 0) {
             retryCount = 0
         }
 
-        // Release existing player
         player?.release()
 
-        // Configure buffering
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
                 minBufferMs,
@@ -121,43 +112,34 @@ class PlaybackFragment : Fragment() {
             )
             .build()
 
-        // Create OkHttpClient with unsafe SSL handling
         val okHttpClient = OkHttpClient.Builder()
             .sslSocketFactory(createUnsafeSslContext().socketFactory, createUnsafeTrustManager())
             .hostnameVerifier { _, _ -> true }
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(10, TimeUnit.SECONDS)
             .build()
 
-        // Create HTTP data source factory
-        val httpDataSourceFactory = DefaultHttpDataSource.Factory()
+        val httpDataSourceFactory = OkHttpDataSource.Factory(okHttpClient)
             .setUserAgent("ExoPlayer-CSVTV")
-            .setConnectTimeoutMs(10000)
-            .setReadTimeoutMs(10000)
 
-        // Initialize ExoPlayer
         player = ExoPlayer.Builder(requireContext())
             .setLoadControl(loadControl)
             .build().apply {
                 val mediaItem = MediaItem.Builder()
-                    .setUri(url)
+                    .setUri(urlToPlay)
                     .setMediaMetadata(MediaMetadata.Builder().setTitle("Video Stream").build())
                     .build()
                 this@PlaybackFragment.currentMediaItem = mediaItem
 
-                val mediaSource = when {
-                    url.startsWith("rtmp://") -> {
-                        val rtmpDataSourceFactory = RtmpDataSource.Factory()
-                        DefaultMediaSourceFactory(rtmpDataSourceFactory).createMediaSource(mediaItem)
-                    }
-                    url.endsWith(".m3u8") -> {
-                        val okHttpDataSourceFactory = OkHttpDataSource.Factory(okHttpClient)
-                        HlsMediaSource.Factory(okHttpDataSourceFactory)
-                            .setAllowChunklessPreparation(true)
-                            .createMediaSource(mediaItem)
-                    }
-                    else -> {
-                        DefaultMediaSourceFactory(httpDataSourceFactory).createMediaSource(mediaItem)
-                    }
+                val mediaSource = if (urlToPlay.startsWith("rtmp://")) {
+                    val rtmpDataSourceFactory = RtmpDataSource.Factory()
+                    DefaultMediaSourceFactory(rtmpDataSourceFactory).createMediaSource(mediaItem)
+                } else {
+                    HlsMediaSource.Factory(httpDataSourceFactory)
+                        .setAllowChunklessPreparation(true)
+                        .createMediaSource(mediaItem)
                 }
+
                 setMediaSource(mediaSource)
                 prepare()
                 seekTo(playbackPosition)
@@ -210,22 +192,15 @@ class PlaybackFragment : Fragment() {
                             errorText?.text = "Playback error, retrying ($retryCount/$maxRetries)..."
                             Log.d("PlaybackFragment", "Player error, retrying ($retryCount/$maxRetries): ${error.message}")
                             handler.postDelayed({
-                                resolvedUrl?.let { resolved ->
+                                resolvedUrl?.let { resolvedString ->
                                     currentMediaItem?.let { mediaItemToRetry ->
-                                        val mediaSource = when {
-                                            resolved.startsWith("rtmp://") -> {
-                                                val rtmpDataSourceFactory = RtmpDataSource.Factory()
-                                                DefaultMediaSourceFactory(rtmpDataSourceFactory).createMediaSource(mediaItemToRetry)
-                                            }
-                                            resolved.endsWith(".m3u8") -> {
-                                                val okHttpDataSourceFactory = OkHttpDataSource.Factory(okHttpClient)
-                                                HlsMediaSource.Factory(okHttpDataSourceFactory)
-                                                    .setAllowChunklessPreparation(true)
-                                                    .createMediaSource(mediaItemToRetry)
-                                            }
-                                            else -> {
-                                                DefaultMediaSourceFactory(httpDataSourceFactory).createMediaSource(mediaItemToRetry)
-                                            }
+                                        val mediaSource = if (resolvedString.startsWith("rtmp://")) {
+                                            val rtmpDataSourceFactory = RtmpDataSource.Factory()
+                                            DefaultMediaSourceFactory(rtmpDataSourceFactory).createMediaSource(mediaItemToRetry)
+                                        } else {
+                                            HlsMediaSource.Factory(httpDataSourceFactory)
+                                                .setAllowChunklessPreparation(true)
+                                                .createMediaSource(mediaItemToRetry)
                                         }
                                         player?.setMediaSource(mediaSource)
                                         player?.prepare()
@@ -239,10 +214,9 @@ class PlaybackFragment : Fragment() {
                             errorText?.text = "Failed to play stream after $maxRetries attempts: ${error.message}"
                             playerView?.useController = true
                             Log.e("PlaybackFragment", "Failed to play stream after $maxRetries attempts: ${error.message}")
-                            // Navigate back to MainFragment
                             handler.postDelayed({
                                 parentFragmentManager.popBackStack()
-                            }, 2000L) // Delay to show error message
+                            }, 2000L)
                         }
                     }
 
@@ -254,7 +228,7 @@ class PlaybackFragment : Fragment() {
             }
 
         playerView?.player = player
-        Log.d("PlaybackFragment", "Player initialized with URL: $url")
+        Log.d("PlaybackFragment", "Player initialized with URL: $urlToPlay")
     }
 
     private fun createUnsafeSslContext(): SSLContext {

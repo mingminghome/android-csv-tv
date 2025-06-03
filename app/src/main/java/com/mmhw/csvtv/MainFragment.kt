@@ -70,22 +70,24 @@ class MainFragment : BrowseSupportFragment() {
                 Toast.makeText(requireContext(), "Resolving URL...", Toast.LENGTH_SHORT).show()
 
                 // Resolve the URL to check if it’s a video stream
-                Utils.resolveUrl(url) { resolvedUrl, error ->
-                    if (error != null || resolvedUrl.isNullOrBlank()) {
-                        Log.w("MainFragment", "Failed to resolve URL: $url, error: $error")
-                        // Fallback to WebViewFragment if resolution fails
-                        Log.d("MainFragment", "Opening WebViewFragment for URL: $url")
-                        openWebViewFragment(url)
-                        return@resolveUrl
-                    }
-
-                    Log.d("MainFragment", "Resolved URL: $url -> $resolvedUrl, isVideoStream=${Utils.isVideoStream(resolvedUrl)}")
-                    if (Utils.isVideoStream(resolvedUrl)) {
-                        Log.d("MainFragment", "Opening PlaybackFragment for resolved URL: $resolvedUrl")
-                        openPlaybackFragment(resolvedUrl)
+                // Modified callback to include contentType
+                Utils.resolveUrl(url) { resolvedUrl, contentType, error ->
+                    // Prioritize the presence of a resolved URL. Only fall back to WebView if resolvedUrl is null or blank.
+                    if (!resolvedUrl.isNullOrBlank()) {
+                        Log.d("MainFragment", "Resolved URL: $url -> $resolvedUrl, Content-Type: $contentType, isVideoStream=${Utils.isVideoStream(resolvedUrl, contentType)}")
+                        // Pass contentType to isVideoStream
+                        if (Utils.isVideoStream(resolvedUrl, contentType)) {
+                            Log.d("MainFragment", "Opening PlaybackFragment for resolved URL: $resolvedUrl")
+                            openPlaybackFragment(resolvedUrl)
+                        } else {
+                            Log.d("MainFragment", "Opening WebViewFragment for resolved URL: $resolvedUrl")
+                            openWebViewFragment(resolvedUrl)
+                        }
                     } else {
-                        Log.d("MainFragment", "Opening WebViewFragment for resolved URL: $resolvedUrl")
-                        openWebViewFragment(resolvedUrl)
+                        // If resolvedUrl is null or blank, it's a true resolution failure
+                        Log.w("MainFragment", "Failed to resolve URL: $url, error: $error")
+                        Log.d("MainFragment", "Opening WebViewFragment for URL: $url")
+                        openWebViewFragment(url) // Fallback to original URL in WebView
                     }
                 }
             }
