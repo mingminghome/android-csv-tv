@@ -65,17 +65,19 @@ class MainFragment : BrowseSupportFragment() {
                 startActivity(Intent(requireContext(), SetupActivity::class.java))
                 return
             }
+            url.startsWith("rtmp://") -> {
+                Log.d("MainFragment", "Opening PlaybackFragment directly for RTMP URL: $url")
+                openPlaybackFragment(url)
+                return
+            }
             else -> {
                 // Show a loading toast while resolving the URL
                 Toast.makeText(requireContext(), "Resolving URL...", Toast.LENGTH_SHORT).show()
 
                 // Resolve the URL to check if it’s a video stream
-                // Modified callback to include contentType
                 Utils.resolveUrl(url) { resolvedUrl, contentType, error ->
-                    // Prioritize the presence of a resolved URL. Only fall back to WebView if resolvedUrl is null or blank.
                     if (!resolvedUrl.isNullOrBlank()) {
                         Log.d("MainFragment", "Resolved URL: $url -> $resolvedUrl, Content-Type: $contentType, isVideoStream=${Utils.isVideoStream(resolvedUrl, contentType)}")
-                        // Pass contentType to isVideoStream
                         if (Utils.isVideoStream(resolvedUrl, contentType)) {
                             Log.d("MainFragment", "Opening PlaybackFragment for resolved URL: $resolvedUrl")
                             openPlaybackFragment(resolvedUrl)
@@ -84,10 +86,9 @@ class MainFragment : BrowseSupportFragment() {
                             openWebViewFragment(resolvedUrl)
                         }
                     } else {
-                        // If resolvedUrl is null or blank, it's a true resolution failure
                         Log.w("MainFragment", "Failed to resolve URL: $url, error: $error")
                         Log.d("MainFragment", "Opening WebViewFragment for URL: $url")
-                        openWebViewFragment(url) // Fallback to original URL in WebView
+                        openWebViewFragment(url)
                     }
                 }
             }
