@@ -11,15 +11,20 @@
 
 - **Leanback UI**: A TV-friendly interface using Android's Leanback library, with rows of video groups and a settings option.
 - **Dynamic Video Source**: Load videos from a remote CSV file (e.g., a published Google Sheets URL) or a local default CSV file.
-- **Video Playback**: Supports multiple stream types:
-    - HLS (`.m3u8`) using ExoPlayer's HLS support.
-    - MP4 (`.mp4`) using ExoPlayer.
-    - RTMP (`rtmp://`) using ExoPlayer's RTMP extension.
-- **Webpage Loading**: Directly load webpages specified in the CSV file.
-- **Pointer Control**: Use a pointer to control the video player, optimized for TV navigation.
+  - **Guided CSV Setup**: Provides a dedicated setup screen for easily inputting CSV URLs or Google Sheets published CSV IDs, with clear instructions for obtaining the correct ID.
+  - **Intelligent Validation & Fallback**: Validates the provided CSV source. If the link is invalid or empty, the app automatically falls back to the default local CSV file, ensuring continuous operation.
+- **Enhanced Video Playback**:
+  - Supports multiple stream types including HLS (`.m3u8`), MP4 (`.mp4`), and RTMP (`rtmp://`).
+  - **Improved Stream Compatibility:** Handles HLS streams served from dynamic URLs (e.g., PHP scripts) by correctly identifying their content type and using the appropriate HLS media source.
+  - **Resolved Connection Issues:** Implements a workaround for SSL Handshake errors, allowing playback of streams from servers with untrusted or out-of-date certificates.
+  - **Robust Error Handling:** Features auto-retry for playback errors (up to 3 attempts) and provides clear user feedback before returning to the home screen if playback fails.
+  - **Optimized Buffering:** Configurable buffering settings (min 60s, max 120s) for a smoother streaming experience.
+- **Intelligent URL Handling**: Automatically distinguishes between video streams (including RTMP) and web pages, resolving URLs and inspecting content types to route content to the appropriate player or web view.
+- **Webpage Loading**: Directly load webpages specified in the CSV file, with improved interaction.
+  - **Stable Fullscreen Video:** Ensures smooth entry and exit from fullscreen video playback within the WebView.
+  - **Screensaver Prevention:** Keeps the device screen active during WebView playback.
 - **Settings Screen**: Allows users to specify a custom CSV URL or Google Sheets ID to load videos dynamically.
 - **Error Handling**: Gracefully handles invalid CSV URLs by falling back to the default CSV file, with user feedback via toast messages.
-- **Buffering Configuration**: Customizable buffering settings for smooth playback on TV devices.
 
 ## Screenshots
 ![tv](https://github.com/user-attachments/assets/56ccfd78-cef4-4b93-8a2f-e0064c0f3557)
