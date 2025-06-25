@@ -6,6 +6,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import android.widget.Toast
+import androidx.fragment.app.FragmentManager
 import androidx.leanback.app.BrowseSupportFragment
 import androidx.leanback.widget.ArrayObjectAdapter
 import androidx.leanback.widget.HeaderItem
@@ -62,7 +63,17 @@ class MainFragment : BrowseSupportFragment() {
                 return
             }
             url.equals("settings", ignoreCase = true) || title.equals("Settings", ignoreCase = true) -> {
-                startActivity(Intent(requireContext(), SetupActivity::class.java))
+                // *** CHANGE: Ensure everything stops when going to Settings ***
+
+                // 1. Pop all fragments from the back stack to destroy any open WebView or PlaybackFragment.
+                parentFragmentManager.popBackStack(null, FragmentManager.POP_BACK_STACK_INCLUSIVE)
+
+                // 2. Start the Setup activity.
+                val intent = Intent(requireContext(), SetupActivity::class.java)
+                startActivity(intent)
+
+                // 3. Finish the current MainActivity to ensure a clean start after setup is complete.
+                requireActivity().finish()
                 return
             }
             url.startsWith("rtmp://") -> {
@@ -71,10 +82,8 @@ class MainFragment : BrowseSupportFragment() {
                 return
             }
             else -> {
-                // Show a loading toast while resolving the URL
                 Toast.makeText(requireContext(), "Resolving URL...", Toast.LENGTH_SHORT).show()
 
-                // Resolve the URL to check if it’s a video stream
                 Utils.resolveUrl(url) { resolvedUrl, contentType, error ->
                     if (!resolvedUrl.isNullOrBlank()) {
                         Log.d("MainFragment", "Resolved URL: $url -> $resolvedUrl, Content-Type: $contentType, isVideoStream=${Utils.isVideoStream(resolvedUrl, contentType)}")

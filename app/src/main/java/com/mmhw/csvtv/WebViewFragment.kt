@@ -11,7 +11,6 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.JavascriptInterface
-import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -20,7 +19,6 @@ import android.widget.ImageView
 import android.widget.Toast
 import androidx.fragment.app.Fragment
 import org.json.JSONObject
-import kotlin.math.max
 
 class WebViewFragment : Fragment() {
 
@@ -35,15 +33,27 @@ class WebViewFragment : Fragment() {
     private val scrollThreshold = 30f
     private var contentWidth: Int = 0
     private var contentHeight: Int = 0
-    private var bottomNavHeight: Float = 0f
     private var customView: View? = null
     private var customViewCallback: WebChromeClient.CustomViewCallback? = null
     private lateinit var fullscreenContainer: FrameLayout
+    private lateinit var pointerContainer: FrameLayout
     private var originalOrientation: Int = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
     private var isInFullscreen = false
+    private var isCursorShowing = false
     private var lastDimensionUpdate = 0L
     private val dimensionUpdateDebounce = 1000L
     private val jsHandler = Handler(Looper.getMainLooper())
+
+    private val doubleClickSpeed = 400L
+    private val clickHandler = Handler(Looper.getMainLooper())
+    private var clickRunnable: Runnable? = null
+    private var clickCount = 0
+
+    private var lastMoveKeyCode = -1
+    private var moveStartTime = 0L
+    private val keyResetHandler = Handler(Looper.getMainLooper())
+    private val keyResetRunnable = Runnable { lastMoveKeyCode = -1 }
+
 
     override fun onCreateView(
         inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
@@ -58,6 +68,7 @@ class WebViewFragment : Fragment() {
         val url = arguments?.getString("url") ?: return
         webView = view.findViewById(R.id.web_view)
         container = view.findViewById(R.id.webview_container)
+        val activityContent = requireActivity().findViewById<ViewGroup>(android.R.id.content)
 
         originalOrientation = requireActivity().requestedOrientation
 
@@ -68,41 +79,43 @@ class WebViewFragment : Fragment() {
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
             visibility = View.GONE
+            @Suppress("DEPRECATION")
+            setBackgroundColor(resources.getColor(android.R.color.black))
         }
+        activityContent?.addView(fullscreenContainer)
 
-        requireActivity().findViewById<ViewGroup>(android.R.id.content)?.addView(fullscreenContainer)
+        pointerContainer = FrameLayout(requireContext()).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        }
+        activityContent?.addView(pointerContainer)
 
-        setupPointer(view)
+        setupPointer(pointerContainer)
         setupWebView(url)
 
         container.isFocusable = true
         container.isFocusableInTouchMode = true
         container.requestFocus()
         container.setOnKeyListener { _, keyCode, event ->
-            println("Key event received: keyCode=$keyCode, action=${event.action}, containerHasFocus=${container.hasFocus()}")
             handleKeyEvent(keyCode, event)
-        }
-
-        container.setOnFocusChangeListener { _, hasFocus ->
-            println("Container focus changed: hasFocus=$hasFocus")
         }
     }
 
-    private fun setupPointer(view: View) {
+    private fun setupPointer(parent: ViewGroup) {
         pointer = ImageView(context).apply {
             id = View.generateViewId()
             setImageResource(R.drawable.cursor)
             visibility = View.VISIBLE
             layoutParams = FrameLayout.LayoutParams(48, 48)
         }
+        parent.addView(pointer)
 
-        (view as ViewGroup).addView(pointer)
-
-        view.post {
-            pointerX = (container.width / 2).toFloat()
-            pointerY = (container.height / 2).toFloat()
+        parent.post {
+            pointerX = (parent.width / 2).toFloat()
+            pointerY = (parent.height / 2).toFloat()
             updatePointerPosition()
-            println("Pointer initialized: x=$pointerX, y=$pointerY, containerHeight=${container.height}")
         }
     }
 
@@ -112,7 +125,7 @@ class WebViewFragment : Fragment() {
             javaScriptEnabled = true
             loadWithOverviewMode = true
             useWideViewPort = true
-            builtInZoomControls = true
+            builtInZoomControls = false
             displayZoomControls = false
             mediaPlaybackRequiresUserGesture = false
             domStorageEnabled = true
@@ -120,7 +133,7 @@ class WebViewFragment : Fragment() {
             setSupportMultipleWindows(true)
             javaScriptCanOpenWindowsAutomatically = true
             allowContentAccess = true
-            setSupportZoom(true)
+            setSupportZoom(false)
         }
 
         webView.addJavascriptInterface(AndroidBridge(this), "AndroidBridge")
@@ -130,33 +143,36 @@ class WebViewFragment : Fragment() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 updateContentDimensions()
-                injectFullscreenFix()
-                injectMutationObserver()
-                println("Page finished loading: $url")
             }
 
+            @Suppress("DEPRECATION")
             override fun onReceivedError(view: WebView?, errorCode: Int, description: String?, failingUrl: String?) {
-                println("WebViewFragment: Error loading page: $description (code: $errorCode)")
                 showToast("Failed to load page: $description")
-                handler.postDelayed({
-                    parentFragmentManager.popBackStack()
-                }, 2000L) // Delay to show toast
+                parentFragmentManager.popBackStack()
             }
         }
 
         webView.webChromeClient = object : WebChromeClient() {
             override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
-                println("onShowCustomView called")
                 if (customView != null) {
                     onHideCustomView()
                     return
                 }
 
                 isInFullscreen = true
+                setCursorVisibility(false)
                 customView = view
                 customViewCallback = callback
 
-                requireActivity().requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                @Suppress("DEPRECATION")
+                requireActivity().window.decorView.systemUiVisibility = (
+                        View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                                or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                                or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                                or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                                or View.SYSTEM_UI_FLAG_FULLSCREEN
+                                or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                        )
 
                 fullscreenContainer.addView(view, FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
@@ -164,47 +180,36 @@ class WebViewFragment : Fragment() {
                 ))
 
                 fullscreenContainer.visibility = View.VISIBLE
-                webView.visibility = View.INVISIBLE
                 container.visibility = View.INVISIBLE
 
-                hidePointer()
-
-                println("Entered fullscreen mode")
+                fullscreenContainer.isFocusable = true
+                fullscreenContainer.isFocusableInTouchMode = true
+                fullscreenContainer.requestFocus()
+                fullscreenContainer.setOnKeyListener { _, keyCode, event ->
+                    handleKeyEvent(keyCode, event)
+                }
             }
 
             override fun onHideCustomView() {
-                println("onHideCustomView called")
                 if (customView == null) return
 
                 isInFullscreen = false
 
-                webView.evaluateJavascript(
-                    """
-                    (function() {
-                        var videos = document.getElementsByTagName('video');
-                        for (var i = 0; i < videos.length; i++) {
-                            videos[i].pause();
-                        }
-                    })();
-                    """, null
-                )
-
-                requireActivity().requestedOrientation = originalOrientation
+                @Suppress("DEPRECATION")
+                requireActivity().window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
 
                 fullscreenContainer.visibility = View.GONE
-                webView.visibility = View.VISIBLE
                 container.visibility = View.VISIBLE
 
+                fullscreenContainer.setOnKeyListener(null)
+                container.requestFocus()
+
                 fullscreenContainer.removeView(customView)
-
                 customViewCallback?.onCustomViewHidden()
-
                 customView = null
                 customViewCallback = null
 
-                container.requestFocus()
-                updateContentDimensions()
-                println("Exited fullscreen mode")
+                setCursorVisibility(true)
             }
         }
 
@@ -212,69 +217,6 @@ class WebViewFragment : Fragment() {
         webView.loadUrl(url)
         webView.isFocusable = false
         webView.isFocusableInTouchMode = false
-    }
-
-    private fun injectFullscreenFix() {
-        val js = """
-            (function() {
-                var videoElements = document.getElementsByTagName('video');
-                for (var i = 0; i < videoElements.length; i++) {
-                    videoElements[i].addEventListener('webkitbeginfullscreen', function() {
-                        console.log('Video entered fullscreen');
-                    });
-                    videoElements[i].addEventListener('play', function() {
-                        console.log('Video playback started');
-                    });
-                    videoElements[i].addEventListener('error', function(e) {
-                        console.log('Video playback error: ' + e.message);
-                    });
-                }
-                var style = document.createElement('style');
-                style.textContent = 'video { transform: translateZ(0); }';
-                document.head.appendChild(style);
-            })();
-        """.trimIndent()
-
-        jsHandler.post { webView.evaluateJavascript(js, null) }
-    }
-
-    private fun injectInteractionFix() {
-        val js = """
-            (function() {
-                function applyInteractionStyles(element) {
-                    if (!element.style.zIndex || parseInt(element.style.zIndex) < 1000) {
-                        element.style.setProperty('pointer-events', 'auto', 'important');
-                        element.style.setProperty('z-index', '1000', 'important');
-                    }
-                }
-                var elements = document.querySelectorAll('a[href], button, [role="button"], [onclick], [class*="page"], [class*="nav"] a');
-                for (var i = 0; i < elements.length; i++) {
-                    applyInteractionStyles(elements[i]);
-                }
-            })();
-        """.trimIndent()
-        jsHandler.post { webView.evaluateJavascript(js, null) }
-    }
-
-    private fun injectMutationObserver() {
-        val js = """
-            (function() {
-                const observer = new MutationObserver(function(mutations) {
-                    mutations.forEach(function(mutation) {
-                        if (mutation.type === 'childList' || mutation.type === 'attributes') {
-                            window.AndroidBridge.updateDimensions();
-                        }
-                    });
-                });
-                observer.observe(document.body, {
-                    childList: true,
-                    subtree: true,
-                    attributes: true,
-                    attributeFilter: ['style', 'class']
-                });
-            })();
-        """.trimIndent()
-        jsHandler.post { webView.evaluateJavascript(js, null) }
     }
 
     class AndroidBridge(private val fragment: WebViewFragment) {
@@ -287,7 +229,6 @@ class WebViewFragment : Fragment() {
                     if (now - fragment.lastDimensionUpdate > fragment.dimensionUpdateDebounce) {
                         fragment.lastDimensionUpdate = now
                         fragment.updateContentDimensions()
-                        println("Content dimensions updated due to DOM change")
                     }
                 }
             }
@@ -295,371 +236,264 @@ class WebViewFragment : Fragment() {
     }
 
     private fun updateContentDimensions() {
-        webView.evaluateJavascript(
-            """
-            (function() {
-                const originalScrollY = window.scrollY;
-                window.scrollTo(0, Number.MAX_SAFE_INTEGER);
-                const maxScrollY = window.scrollY;
-                window.scrollTo(0, originalScrollY);
-
-                let maxHeight = Math.max(
-                    document.body.scrollHeight,
-                    document.documentElement.scrollHeight,
-                    document.body.offsetHeight,
-                    document.documentElement.offsetHeight,
-                    window.innerHeight,
-                    maxScrollY + window.innerHeight
-                );
-                let maxWidth = Math.max(
-                    document.body.scrollWidth,
-                    document.documentElement.scrollWidth,
-                    document.body.offsetWidth,
-                    document.documentElement.offsetWidth,
-                    window.innerWidth
-                );
-
-                const elements = document.querySelectorAll('[style*="position"], nav, footer, [role="navigation"]');
-                let fixedHeight = 0;
-                let bottomNavHeight = 0;
-                let fixedElementsDetails = [];
-                for (let el of elements) {
-                    const style = window.getComputedStyle(el);
-                    if ((style.position === 'fixed' || style.position === 'sticky') && style.display !== 'none' && style.visibility !== 'hidden') {
-                        const rect = el.getBoundingClientRect();
-                        const elBottom = rect.bottom + window.scrollY;
-                        maxHeight = Math.max(maxHeight, elBottom);
-                        fixedHeight = Math.max(fixedHeight, rect.height);
-                        const bottomValue = parseFloat(style.bottom) || 0;
-                        if ((el.tagName === 'DIV' || el.tagName === 'NAV') && bottomValue >= 0 && bottomValue < 50 && rect.height < 100) {
-                            bottomNavHeight = Math.max(bottomNavHeight, rect.height);
-                        }
-                        fixedElementsDetails.push({
-                            tag: el.tagName,
-                            height: rect.height,
-                            bottom: rect.bottom,
-                            position: style.position,
-                            styleBottom: style.bottom,
-                            zIndex: style.zIndex,
-                            class: el.className
-                        });
-                    }
-                }
-
-                return {
-                    width: maxWidth,
-                    height: maxHeight,
-                    fixedHeight: fixedHeight,
-                    bottomNavHeight: bottomNavHeight,
-                    fixedElementsDetails: fixedElementsDetails
-                };
-            })();
-            """.trimIndent(),
-            ValueCallback { value ->
-                var contentHeightFromWebView = (webView.contentHeight * webView.scaleY).toInt()
-                try {
-                    val json = JSONObject(value)
-                    contentWidth = json.getInt("width")
-                    contentHeight = json.getInt("height")
-                    val fixedHeight = json.getInt("fixedHeight")
-                    bottomNavHeight = json.getInt("bottomNavHeight").toFloat()
-                    val fixedElementsDetails = json.getJSONArray("fixedElementsDetails")
-                    contentHeightFromWebView = (webView.contentHeight * webView.scaleY).toInt()
-                    if (contentHeight > contentHeightFromWebView + 500) {
-                        contentHeight = contentHeightFromWebView
-                        println("Content height capped to contentHeightFromWebView: $contentHeight")
-                    }
-                    println("Content dimensions updated: width=$contentWidth, height=$contentHeight, fixedHeight=$fixedHeight, bottomNavHeight=$bottomNavHeight, fixedElementsDetails=$fixedElementsDetails, scrollY=${webView.scrollY}, contentHeightFromWebView=$contentHeightFromWebView, scaleY=${webView.scaleY}, containerHeight=${container.height}")
-                } catch (e: Exception) {
-                    contentWidth = webView.width
-                    contentHeight = contentHeightFromWebView
-                    bottomNavHeight = 0f
-                    println("Failed to parse content dimensions: ${e.message}, using defaults: width=$contentWidth, height=$contentHeight, contentHeightFromWebView=$contentHeightFromWebView")
-                }
+        webView.evaluateJavascript("(function() { return { width: document.body.scrollWidth, height: document.body.scrollHeight }; })();") { value ->
+            try {
+                val json = JSONObject(value)
+                contentWidth = json.getInt("width")
+                contentHeight = json.getInt("height")
+            } catch (e: Exception) {
+                contentWidth = webView.width
+                contentHeight = (webView.contentHeight * webView.scaleY).toInt()
             }
-        )
+        }
     }
 
     private fun handleKeyEvent(keyCode: Int, event: KeyEvent): Boolean {
-        println("Handling key event: keyCode=$keyCode, action=${event.action}")
-        if (event.action != KeyEvent.ACTION_DOWN) {
-            return false
+        if (event.action == KeyEvent.ACTION_UP) {
+            if (keyCode == lastMoveKeyCode) lastMoveKeyCode = -1
+            return true
         }
+
+        if (event.action != KeyEvent.ACTION_DOWN) return false
 
         if (isInFullscreen) {
-            when (keyCode) {
-                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER,
-                KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
-                    webView.evaluateJavascript(
-                        """
-                        (function() {
-                            var videos = document.getElementsByTagName('video');
-                            if (videos.length > 0) {
-                                if (videos[0].paused) {
-                                    videos[0].play();
-                                    return 'play';
-                                } else {
-                                    videos[0].pause();
-                                    return 'pause';
-                                }
-                            }
-                            return 'no_video';
-                        })()
-                        """.trimIndent(),
-                        ValueCallback { value ->
-                            println("Fullscreen video action: $value")
-                        }
-                    )
+            if (isCursorShowing) {
+                // --- CURSOR MODE ---
+                val directionals = listOf(KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT)
+                if (keyCode in directionals) {
+                    resetPointerHideTimer()
+                    val speed = pointerSpeed
+                    val (deltaX, deltaY) = when (keyCode) {
+                        KeyEvent.KEYCODE_DPAD_UP -> 0f to -speed
+                        KeyEvent.KEYCODE_DPAD_DOWN -> 0f to speed
+                        KeyEvent.KEYCODE_DPAD_LEFT -> -speed to 0f
+                        KeyEvent.KEYCODE_DPAD_RIGHT -> speed to 0f
+                        else -> 0f to 0f
+                    }
+                    movePointer(deltaX, deltaY)
                     return true
                 }
-                KeyEvent.KEYCODE_BACK -> {
-                    webView.webChromeClient?.onHideCustomView()
-                    return true
+                when (keyCode) {
+                    KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
+                        performClick()
+                        return true
+                    }
+                    KeyEvent.KEYCODE_BACK -> {
+                        setCursorVisibility(false)
+                        return true
+                    }
+                }
+            } else {
+                // --- GESTURE MODE (CURSOR IS HIDDEN) ---
+                when (keyCode) {
+                    // *** CHANGE: All 4 directionals now enter Cursor Mode ***
+                    KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                        setCursorVisibility(true)
+                        pointerX = (fullscreenContainer.width / 2).toFloat()
+                        pointerY = (fullscreenContainer.height / 2).toFloat()
+                        updatePointerPosition()
+                        return true
+                    }
+                    KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
+                        handleCenterClick()
+                        return true
+                    }
+                    KeyEvent.KEYCODE_BACK -> {
+                        webView.webChromeClient?.onHideCustomView()
+                        return true
+                    }
                 }
             }
-            return false
+            return true
         }
 
-        if (!container.hasFocus()) {
-            container.requestFocus()
-            println("Focus restored to container in handleKeyEvent")
-        }
+        // --- Non-Fullscreen Logic ---
+        if (!container.hasFocus()) container.requestFocus()
+
+        keyResetHandler.removeCallbacks(keyResetRunnable)
+        keyResetHandler.postDelayed(keyResetRunnable, 200)
 
         when (keyCode) {
-            KeyEvent.KEYCODE_DPAD_UP -> {
-                showPointer()
-                movePointer(0f, -pointerSpeed)
-                return true
-            }
-            KeyEvent.KEYCODE_DPAD_DOWN -> {
-                showPointer()
-                movePointer(0f, pointerSpeed)
-                return true
-            }
-            KeyEvent.KEYCODE_DPAD_LEFT -> {
-                showPointer()
-                movePointer(-pointerSpeed, 0f)
-                return true
-            }
-            KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                showPointer()
-                movePointer(pointerSpeed, 0f)
+            KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                cancelPendingClick()
+                val speed = calculatePointerSpeed(keyCode)
+                val (deltaX, deltaY) = when (keyCode) {
+                    KeyEvent.KEYCODE_DPAD_UP -> 0f to -speed
+                    KeyEvent.KEYCODE_DPAD_DOWN -> 0f to speed
+                    KeyEvent.KEYCODE_DPAD_LEFT -> -speed to 0f
+                    KeyEvent.KEYCODE_DPAD_RIGHT -> speed to 0f
+                    else -> 0f to 0f
+                }
+                setCursorVisibility(true)
+                movePointer(deltaX, deltaY)
                 return true
             }
             KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
-                performClick()
+                handleCenterClick()
                 return true
             }
-            else -> {
-                println("Unhandled key event: keyCode=$keyCode")
-                return false
+            KeyEvent.KEYCODE_BACK -> {
+                if (webView.canGoBack()) webView.goBack() else parentFragmentManager.popBackStack()
+                return true
             }
         }
+        return false
+    }
+
+    private fun handleCenterClick() {
+        clickCount++
+        if (clickCount == 1) {
+            clickRunnable = Runnable {
+                if (isInFullscreen) {
+                    injectJavaScriptForVideo("if (video.paused) { video.play(); } else { video.pause(); }")
+                    setCursorVisibility(true)
+                    pointerX = (fullscreenContainer.width / 2).toFloat()
+                    pointerY = (fullscreenContainer.height / 2).toFloat()
+                    updatePointerPosition()
+                } else {
+                    performClick()
+                }
+                clickCount = 0
+                clickRunnable = null
+            }
+            clickHandler.postDelayed(clickRunnable!!, doubleClickSpeed)
+        } else if (clickCount >= 2) {
+            cancelPendingClick()
+            if (isInFullscreen) {
+                webView.webChromeClient?.onHideCustomView()
+            } else {
+                toggleFullscreen()
+            }
+        }
+    }
+
+    private fun cancelPendingClick() {
+        if (clickRunnable != null) {
+            clickHandler.removeCallbacks(clickRunnable!!)
+            clickRunnable = null
+        }
+        clickCount = 0
+    }
+
+    private fun calculatePointerSpeed(keyCode: Int): Float {
+        val baseSpeed = this.pointerSpeed
+        if (keyCode != lastMoveKeyCode) {
+            lastMoveKeyCode = keyCode
+            moveStartTime = System.currentTimeMillis()
+            return baseSpeed
+        }
+        val duration = System.currentTimeMillis() - moveStartTime
+        if (duration < 300L) return baseSpeed
+        val accelerationDuration = duration - 300L
+        val speedMultiplier = 1.0f + (accelerationDuration / 1500f) * 3.0f
+        return (baseSpeed * speedMultiplier).coerceAtMost(baseSpeed * 4.0f)
     }
 
     private fun movePointer(deltaX: Float, deltaY: Float) {
         pointerX += deltaX
         pointerY += deltaY
 
-        val contentHeightFromWebView = (webView.contentHeight * webView.scaleY).toInt()
-        var interactiveElement = ""
-        var interactiveElementY = 0f
-        var interactiveElementX = 0f
-        val adjustedY = (pointerY + webView.scrollY).coerceIn(0f, contentHeight.toFloat())
-        webView.evaluateJavascript(
-            """
-            (function() {
-                var x = ${pointerX.toInt()};
-                var y = ${adjustedY.toInt()};
-                var selectors = ['a[href]', 'button', '[role="button"]', '[onclick]', '[class*="play"]', '[class*="pause"]', '[class*="video"]', '[class*="nav"] a'];
-                for (var selector of selectors) {
-                    var elements = document.querySelectorAll(selector);
-                    for (var el of elements) {
-                        var rect = el.getBoundingClientRect();
-                        if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom &&
-                            el.offsetWidth > 0 && el.offsetHeight > 0) {
-                            return el.tagName + '|' + el.className + '|' + rect.top + '|' + ((rect.left + rect.right) / 2);
-                        }
-                    }
-                }
-                return '';
-            })();
-            """.trimIndent(),
-            ValueCallback { value ->
-                try {
-                    if (value.isNotEmpty() && value != "\"\"") {
-                        val parts = value.replace("\"", "").split("|")
-                        if (parts.size >= 4) {
-                            interactiveElement = "${parts[0]}|${parts[1]}"
-                            interactiveElementY = parts[2].toFloatOrNull() ?: 0f
-                            interactiveElementX = parts[3].toFloatOrNull() ?: pointerX
-                        }
-                    }
-                    println("Interactive element check at x=$pointerX, y=$pointerY, adjustedY=$adjustedY, element=$interactiveElement, elementY=$interactiveElementY, elementX=$interactiveElementX, rawValue=$value")
-                } catch (e: Exception) {
-                    println("Failed to parse interactive element: ${e.message}, value=$value")
-                }
+        val boundsView = if (isInFullscreen) fullscreenContainer else container
+        val viewWidth = boundsView.width.toFloat()
+        val viewHeight = boundsView.height.toFloat()
+
+        pointerX = pointerX.coerceIn(0f, viewWidth - pointer.width.toFloat())
+        pointerY = pointerY.coerceIn(0f, viewHeight - pointer.height.toFloat())
+
+        if (!isInFullscreen) {
+            if (deltaX < 0 && pointerX < scrollThreshold && webView.scrollX > 0) {
+                webView.scrollBy(-pointerSpeed.toInt(), 0)
+            } else if (deltaX > 0 && pointerX > container.width - pointer.width - scrollThreshold) {
+                val maxScrollX = (contentWidth * webView.scaleX - container.width).toInt().coerceAtLeast(0)
+                if (webView.scrollX < maxScrollX) webView.scrollBy(pointerSpeed.toInt(), 0)
             }
-        )
 
-        var hoverAttempt = 0
-        fun tryHover() {
-            webView.evaluateJavascript(
-                """
-                (function() {
-                    var x = ${pointerX.toInt()};
-                    var y = ${adjustedY.toInt()};
-                    var element = document.elementFromPoint(x, y);
-                    if (element && element.offsetWidth > 0 && element.offsetHeight > 0) {
-                        var events = [
-                            new MouseEvent('mouseover', { view: window, bubbles: true, cancelable: true, clientX: x, clientY: y }),
-                            new MouseEvent('mouseenter', { view: window, bubbles: true, cancelable: true, clientX: x, clientY: y }),
-                            new MouseEvent('mousemove', { view: window, bubbles: true, cancelable: true, clientX: x, clientY: y }),
-                            new PointerEvent('pointerover', { view: window, bubbles: true, cancelable: true, clientX: x, clientY: y }),
-                            new PointerEvent('pointerenter', { view: window, bubbles: true, cancelable: true, clientX: x, clientY: y }),
-                            new PointerEvent('pointermove', { view: window, bubbles: true, cancelable: true, clientX: x, clientY: y })
-                        ];
-                        events.forEach(event => element.dispatchEvent(event));
-                        return element.tagName + '|' + element.className;
-                    }
-                    return '';
-                })();
-                """.trimIndent(),
-                ValueCallback { value ->
-                    if (value == "\"\"" && hoverAttempt < 2) {
-                        hoverAttempt++
-                        jsHandler.postDelayed({ tryHover() }, 50)
-                    } else {
-                        println("Hover events simulated at x=$pointerX, y=$pointerY, adjustedY=$adjustedY, element=$value, attempt=$hoverAttempt")
-                    }
-                }
-            )
-        }
-        jsHandler.post { tryHover() }
-
-        // Horizontal scrolling
-        if (deltaX < 0 && pointerX < scrollThreshold && webView.scrollX > 0) {
-            val newScrollX = (webView.scrollX - pointerSpeed.toInt()).coerceAtLeast(0)
-            webView.scrollTo(newScrollX, webView.scrollY)
-            pointerX = scrollThreshold
-            println("Scrolled left: scrollX=${webView.scrollX}, pointerX=$pointerX, deltaX=$deltaX")
-        } else if (deltaX > 0 && pointerX > container.width - pointer.width - scrollThreshold && contentWidth > 0) {
-            val maxScrollX = (contentWidth * webView.scaleX - container.width).toInt().coerceAtLeast(0)
-            val newScrollX = (webView.scrollX + pointerSpeed.toInt()).coerceAtMost(maxScrollX)
-            webView.scrollTo(newScrollX, webView.scrollY)
-            pointerX = (container.width.toFloat() - pointer.width.toFloat() - scrollThreshold).coerceAtLeast(0f)
-            println("Scrolled right: scrollX=${webView.scrollX}, pointerX=$pointerX, deltaX=$deltaX")
-        }
-
-        // Vertical scrolling
-        val calculatedMaxScrollY = (contentHeight - container.height).toInt().coerceAtLeast(0)
-        val maxScrollY = maxOf(calculatedMaxScrollY, contentHeightFromWebView)
-        if (deltaY < 0 && webView.scrollY > 0) {
-            val newScrollY = (webView.scrollY - pointerSpeed.toInt()).coerceAtLeast(0)
-            webView.scrollTo(webView.scrollX, newScrollY)
-            pointerY = (pointerY + deltaY).coerceAtLeast(0f)
-            if (interactiveElement.isNotEmpty()) {
-                pointerY = (interactiveElementY - webView.scrollY).coerceAtLeast(0f).coerceAtMost(container.height.toFloat() - pointer.height.toFloat())
-                pointerX = interactiveElementX.coerceAtLeast(0f).coerceAtMost(container.width.toFloat() - pointer.width.toFloat())
-                println("Adjusted pointer for interactive element: pointerX=$pointerX, pointerY=$pointerY, interactiveElement=$interactiveElement")
+            if (deltaY < 0 && pointerY < scrollThreshold && webView.scrollY > 0) {
+                webView.scrollBy(0, -pointerSpeed.toInt())
+            } else if (deltaY > 0 && pointerY > container.height - pointer.height - scrollThreshold) {
+                val maxScrollY = (contentHeight * webView.scaleY - container.height).toInt().coerceAtLeast(0)
+                if (webView.scrollY < maxScrollY) webView.scrollBy(0, pointerSpeed.toInt())
             }
-            println("Scrolled up: scrollY=${webView.scrollY}, pointerX=$pointerX, pointerY=$pointerY, deltaY=$deltaY")
-            updateContentDimensions()
-        } else if (deltaY > 0) {
-            val newScrollY = (webView.scrollY + pointerSpeed.toInt()).coerceAtMost(maxScrollY)
-            webView.scrollTo(webView.scrollX, newScrollY)
-            pointerY = (pointerY + deltaY).coerceAtMost(container.height.toFloat() - pointer.height.toFloat())
-            if (interactiveElement.isNotEmpty()) {
-                pointerY = (interactiveElementY - webView.scrollY).coerceAtLeast(0f).coerceAtMost(container.height.toFloat() - pointer.height.toFloat())
-                pointerX = interactiveElementX.coerceAtLeast(0f).coerceAtMost(container.width.toFloat() - pointer.width.toFloat())
-                println("Adjusted pointer for interactive element: pointerX=$pointerX, pointerY=$pointerY, interactiveElement=$interactiveElement")
-            }
-            println("Scrolled down: scrollY=${webView.scrollY}, pointerX=$pointerX, pointerY=$pointerY, maxScrollY=$maxScrollY, contentHeight=$contentHeight, contentHeightFromWebView=$contentHeightFromWebView, deltaY=$deltaY")
-            updateContentDimensions()
         }
-
-        pointerX = pointerX.coerceIn(0f, container.width.toFloat() - pointer.width.toFloat())
-        pointerY = pointerY.coerceIn(0f, container.height.toFloat() - pointer.height.toFloat())
-
         updatePointerPosition()
-        resetPointerHideTimer()
     }
 
     private fun updatePointerPosition() {
         pointer.x = pointerX
         pointer.y = pointerY
-        pointer.visibility = View.VISIBLE
-        println("Pointer position updated: x=$pointerX, y=$pointerY, visibility=${pointer.visibility}")
     }
 
-    private fun showPointer() {
-        pointer.visibility = View.VISIBLE
-        println("Pointer shown: visibility=${pointer.visibility}")
-        resetPointerHideTimer()
+    private fun toggleFullscreen() {
+        val js = """
+            (function() {
+                var video = document.querySelector('video');
+                if (video) {
+                    if (document.fullscreenElement || document.webkitFullscreenElement) {
+                        document.exitFullscreen ? document.exitFullscreen() : document.webkitExitFullscreen();
+                    } else {
+                        video.requestFullscreen ? video.requestFullscreen() : video.webkitRequestFullscreen();
+                    }
+                }
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(js, null)
     }
 
-    private fun hidePointer() {
-        pointer.visibility = View.INVISIBLE
-        println("Pointer hidden")
+    private fun injectJavaScriptForVideo(jsAction: String) {
+        val fullJs = """
+            (function() {
+                var video = document.querySelector('video');
+                if (video) { $jsAction }
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(fullJs, null)
+    }
+
+    private fun setCursorVisibility(show: Boolean) {
+        if (show) {
+            isCursorShowing = true
+            pointer.visibility = View.VISIBLE
+            pointer.bringToFront()
+            pointerContainer.requestLayout()
+            resetPointerHideTimer()
+        } else {
+            isCursorShowing = false
+            pointer.visibility = View.INVISIBLE
+            pointerHideHandler.removeCallbacksAndMessages(null)
+        }
     }
 
     private fun resetPointerHideTimer() {
         pointerHideHandler.removeCallbacksAndMessages(null)
-        pointerHideHandler.postDelayed({ hidePointer() }, pointerHideDelay)
+        pointerHideHandler.postDelayed({ setCursorVisibility(false) }, pointerHideDelay)
     }
 
     private fun performClick() {
-        println("Performing click at: x=$pointerX, y=$pointerY, scrollY=${webView.scrollY}")
-        showPointer()
+        // In normal mode, a click should always show the pointer
+        if (!isInFullscreen) {
+            setCursorVisibility(true)
+        } else {
+            // In fullscreen cursor mode, a click should reset the hide timer
+            resetPointerHideTimer()
+        }
 
         val x = pointerX.toInt()
-        val adjustedY = (pointerY + webView.scrollY).toInt()
-
-        webView.evaluateJavascript(
-            """
-            (function() {
-                var x = $x;
-                var y = $adjustedY;
-                var element = document.elementFromPoint(x, y);
-                if (element && element.offsetWidth > 0 && element.offsetHeight > 0) {
-                    var events = [
-                        new MouseEvent('mousedown', { view: window, bubbles: true, cancelable: true, clientX: x, clientY: y }),
-                        new MouseEvent('mouseup', { view: window, bubbles: true, cancelable: true, clientX: x, clientY: y }),
-                        new MouseEvent('click', { view: window, bubbles: true, cancelable: true, clientX: x, clientY: y })
-                    ];
-                    events.forEach(event => element.dispatchEvent(event));
-                    return element.tagName + '|' + element.className;
-                }
-                return 'No element found';
-            })();
-            """.trimIndent(),
-            ValueCallback { value ->
-                println("Click simulated: x=$x, y=$adjustedY, element=$value")
-                if (value == "\"No element found\"") {
-                    println("Click failed: No interactive element at x=$x, y=$adjustedY")
-                }
-            }
-        )
-
+        val y = pointerY.toInt()
         val downTime = System.currentTimeMillis()
-        val eventTime = downTime + 100
-        val downEvent = MotionEvent.obtain(
-            downTime, eventTime, MotionEvent.ACTION_DOWN, x.toFloat(), pointerY.toFloat(), 0
-        )
-        val upEvent = MotionEvent.obtain(
-            downTime, eventTime, MotionEvent.ACTION_UP, x.toFloat(), pointerY.toFloat(), 0
-        )
+        val eventTime = downTime + 10
+        val downEvent = MotionEvent.obtain(downTime, eventTime, MotionEvent.ACTION_DOWN, x.toFloat(), y.toFloat(), 0)
+        val upEvent = MotionEvent.obtain(downTime, eventTime, MotionEvent.ACTION_UP, x.toFloat(), y.toFloat(), 0)
 
-        webView.dispatchTouchEvent(downEvent)
-        webView.dispatchTouchEvent(upEvent)
-
-        container.requestFocus()
-        println("Focus restored to container after click")
+        if (isInFullscreen) {
+            fullscreenContainer.dispatchTouchEvent(downEvent)
+            fullscreenContainer.dispatchTouchEvent(upEvent)
+        } else {
+            webView.dispatchTouchEvent(downEvent)
+            webView.dispatchTouchEvent(upEvent)
+        }
 
         downEvent.recycle()
         upEvent.recycle()
-
-        resetPointerHideTimer()
     }
 
     private fun showToast(message: String) {
@@ -674,17 +508,6 @@ class WebViewFragment : Fragment() {
         super.onPause()
         webView.onPause()
         webView.keepScreenOn = false
-        webView.evaluateJavascript(
-            """
-            (function() {
-                var videos = document.getElementsByTagName('video');
-                for (var i = 0; i < videos.length; i++) {
-                    videos[i].pause();
-                }
-            })();
-            """, null
-        )
-        println("WebViewFragment: onPause called, WebView paused")
     }
 
     override fun onResume() {
@@ -692,57 +515,31 @@ class WebViewFragment : Fragment() {
         webView.onResume()
         container.requestFocus()
         updateContentDimensions()
-        println("WebViewFragment: onResume called, WebView resumed")
     }
 
-    override fun onDestroy() {
-        super.onDestroy()
-        webView.keepScreenOn = false
+    override fun onDestroyView() {
+        super.onDestroyView()
         pointerHideHandler.removeCallbacksAndMessages(null)
+        keyResetHandler.removeCallbacksAndMessages(null)
         jsHandler.removeCallbacksAndMessages(null)
+        clickHandler.removeCallbacksAndMessages(null)
 
         if (isInFullscreen) {
             webView.webChromeClient?.onHideCustomView()
         }
 
+        val activityContent = requireActivity().findViewById<ViewGroup>(android.R.id.content)
+        activityContent?.removeView(pointerContainer)
+        activityContent?.removeView(fullscreenContainer)
+
+        val viewGroup = webView.parent as? ViewGroup
+        viewGroup?.removeView(webView)
         webView.stopLoading()
-        webView.evaluateJavascript(
-            """
-            (function() {
-                var videos = document.getElementsByTagName('video');
-                for (var i = 0; i < videos.length; i++) {
-                    videos[i].pause();
-                }
-            })();
-            """, null
-        )
+        webView.onPause()
         webView.clearHistory()
         webView.clearCache(true)
         webView.loadUrl("about:blank")
-        webView.onPause()
         webView.removeAllViews()
         webView.destroy()
-
-        fullscreenContainer.removeAllViews()
-        requireActivity().findViewById<ViewGroup>(android.R.id.content)?.removeView(fullscreenContainer)
-
-        println("WebViewFragment: onDestroy called, WebView destroyed")
-    }
-
-    fun onBackPressed(): Boolean {
-        if (isInFullscreen) {
-            webView.webChromeClient?.onHideCustomView()
-            return true
-        }
-        return if (webView.canGoBack()) {
-            webView.goBack()
-            true
-        } else {
-            false
-        }
-    }
-
-    companion object {
-        private val handler = Handler(Looper.getMainLooper())
     }
 }

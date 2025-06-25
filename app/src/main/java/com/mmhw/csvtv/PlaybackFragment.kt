@@ -10,15 +10,15 @@ import android.view.ViewGroup
 import android.widget.ProgressBar
 import android.widget.RelativeLayout
 import android.widget.TextView
+import android.widget.Toast
 import androidx.fragment.app.Fragment
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
-import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.rtmp.RtmpDataSource
-import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
@@ -26,10 +26,10 @@ import androidx.media3.datasource.okhttp.OkHttpDataSource
 import okhttp3.OkHttpClient
 import java.security.SecureRandom
 import java.security.cert.X509Certificate
+import java.util.concurrent.TimeUnit
 import javax.net.ssl.SSLContext
 import javax.net.ssl.TrustManager
 import javax.net.ssl.X509TrustManager
-import java.util.concurrent.TimeUnit
 
 class PlaybackFragment : Fragment() {
     private var player: ExoPlayer? = null
@@ -50,6 +50,15 @@ class PlaybackFragment : Fragment() {
     private val maxBufferMs = 120000
     private val bufferForPlaybackMs = 5000
     private val bufferForPlaybackAfterRebufferMs = 10000
+
+    private val BUFFERING_TIMEOUT_MS = 10000L // 10 seconds
+    private val bufferingTimeoutRunnable = Runnable {
+        Log.w("PlaybackFragment", "Buffering timed out. Restarting player.")
+        context?.let {
+            Toast.makeText(it, "Stream is taking too long to load. Reloading...", Toast.LENGTH_LONG).show()
+        }
+        restartPlayer()
+    }
 
     override fun onCreateView(
         inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
@@ -147,6 +156,7 @@ class PlaybackFragment : Fragment() {
 
                 addListener(object : Player.Listener {
                     override fun onPlaybackStateChanged(playbackState: Int) {
+                        handler.removeCallbacks(bufferingTimeoutRunnable) // Always remove callback first
                         when (playbackState) {
                             Player.STATE_BUFFERING -> {
                                 loadingIndicator?.visibility = View.VISIBLE
@@ -155,6 +165,7 @@ class PlaybackFragment : Fragment() {
                                 playerView?.useController = false
                                 playerView?.hideController()
                                 Log.d("PlaybackFragment", "Playback state changed: BUFFERING")
+                                handler.postDelayed(bufferingTimeoutRunnable, BUFFERING_TIMEOUT_MS)
                             }
                             Player.STATE_READY -> {
                                 loadingIndicator?.animate()?.alpha(0f)?.setDuration(200)?.withEndAction {
@@ -229,6 +240,13 @@ class PlaybackFragment : Fragment() {
 
         playerView?.player = player
         Log.d("PlaybackFragment", "Player initialized with URL: $urlToPlay")
+    }
+
+    private fun restartPlayer() {
+        playbackPosition = player?.currentPosition ?: playbackPosition
+        player?.release()
+        player = null
+        resolvedUrl?.let { initializePlayer(it) }
     }
 
     private fun createUnsafeSslContext(): SSLContext {

@@ -2,6 +2,7 @@ package com.mmhw.csvtv
 
 import android.content.Intent
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.fragment.app.FragmentActivity
 
 class MainActivity : FragmentActivity() {
@@ -9,6 +10,7 @@ class MainActivity : FragmentActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         val sharedPrefs = getSharedPreferences("AppPrefs", MODE_PRIVATE)
         val sheetLink = sharedPrefs.getString("sheet_link", null)
 
