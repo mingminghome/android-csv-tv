@@ -1,15 +1,20 @@
 package com.mmhw.csvtv
 
 import android.content.Context
+import android.net.Uri
+import android.util.Log
+import android.webkit.*
 import com.opencsv.CSVReader
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import java.io.StringReader
-import android.net.Uri
-import android.util.Log
+import org.jsoup.Jsoup
 import java.io.IOException
+import java.io.StringReader
 import java.security.SecureRandom
 import java.security.cert.X509Certificate
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.regex.Pattern
 import javax.net.ssl.SSLContext
 import javax.net.ssl.TrustManager
 import javax.net.ssl.X509TrustManager
@@ -18,51 +23,42 @@ object Utils {
     private val client = OkHttpClient.Builder()
         .followRedirects(true)
         .followSslRedirects(true)
-        .connectTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
-        .readTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
         .sslSocketFactory(createUnsafeSslContext().socketFactory, createUnsafeTrustManager())
         .hostnameVerifier { _, _ -> true }
         .build()
 
+    private val urlCache = mutableMapOf<String, Pair<String, String?>>()
+
     fun fetchSheetData(context: Context, sheetLink: String, callback: (List<Video>, String?) -> Unit) {
         if (sheetLink.startsWith("android.resource://")) {
-            // Handle local raw resource
             try {
-                Log.d("Utils", "Reading local CSV from: $sheetLink")
                 val uri = Uri.parse(sheetLink)
                 val inputStream = context.contentResolver.openInputStream(uri)
                 if (inputStream == null) {
-                    Log.e("Utils", "Failed to open input stream for URI: $sheetLink")
                     callback(emptyList(), "Failed to read local CSV: Input stream is null")
                     return
                 }
                 val csvData = inputStream.bufferedReader().use { it.readText() }
                 inputStream.close()
-                Log.d("Utils", "Successfully read local CSV data: ${csvData.take(100)}...")
                 parseCsvData(csvData, callback)
             } catch (e: Exception) {
                 Log.e("Utils", "Error reading local CSV", e)
                 callback(emptyList(), "Failed to read local CSV: ${e.message}")
             }
         } else {
-            // Handle remote URL
             val request = Request.Builder().url(sheetLink).build()
-
             client.newCall(request).enqueue(object : okhttp3.Callback {
                 override fun onFailure(call: okhttp3.Call, e: IOException) {
-                    Log.e("Utils", "Failed to fetch remote CSV", e)
                     callback(emptyList(), "Failed to fetch sheet data: ${e.message}")
                 }
-
                 override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
                     if (!response.isSuccessful) {
-                        Log.e("Utils", "Remote CSV fetch failed: ${response.message}")
                         callback(emptyList(), "Failed to fetch sheet data: ${response.message}")
                         return
                     }
-
                     val csvData = response.body?.string() ?: ""
-                    Log.d("Utils", "Successfully fetched remote CSV data: ${csvData.take(100)}...")
                     parseCsvData(csvData, callback)
                 }
             })
@@ -71,23 +67,16 @@ object Utils {
 
     private fun parseCsvData(csvData: String, callback: (List<Video>, String?) -> Unit) {
         val videos = mutableListOf<Video>()
-
         try {
             val csvReader = CSVReader(StringReader(csvData))
-            val headers = csvReader.readNext()
-            if (headers == null) {
-                Log.e("Utils", "CSV is empty or invalid")
-                callback(emptyList(), "Invalid CSV format: Empty file")
-                return
-            }
+            val headers = csvReader.readNext() ?: return callback(emptyList(), "Empty CSV")
             val titleIndex = headers.indexOf("title")
             val urlIndex = headers.indexOf("url")
             val thumbnailUrlIndex = headers.indexOf("thumbnailUrl")
             val groupNameIndex = headers.indexOf("groupName")
 
             if (titleIndex == -1 || urlIndex == -1 || groupNameIndex == -1) {
-                Log.e("Utils", "Invalid CSV format: Missing required columns (title, url, groupName)")
-                callback(emptyList(), "Invalid CSV format: Missing required columns")
+                callback(emptyList(), "Invalid CSV format")
                 return
             }
 
@@ -98,122 +87,191 @@ object Utils {
                     val url = if (urlIndex < it.size) it[urlIndex] else ""
                     val thumbnailUrl = if (thumbnailUrlIndex != -1 && thumbnailUrlIndex < it.size) it[thumbnailUrlIndex] else null
                     val groupName = if (groupNameIndex < it.size) it[groupNameIndex] else "Default"
-
                     if (title.isNotBlank() && url.isNotBlank()) {
                         videos.add(Video(title, url, thumbnailUrl, groupName))
                     }
                 }
             }
-            Log.d("Utils", "Parsed ${videos.size} videos from CSV")
             callback(videos, null)
         } catch (e: Exception) {
-            Log.e("Utils", "Error parsing CSV", e)
             callback(emptyList(), "Error parsing CSV: ${e.message}")
         }
     }
 
     fun isVideoStream(url: String, contentType: String?): Boolean {
         val normalizedUrl = url.trim().lowercase()
-        // Check for common video file extensions in the URL itself
-        if (normalizedUrl.endsWith(".mp4") ||
-            normalizedUrl.endsWith(".m3u8") ||
-            normalizedUrl.endsWith(".ts") ||
-            normalizedUrl.startsWith("rtmp://") ||
-            normalizedUrl.contains(".m3u8?")) {
+        if (normalizedUrl.contains(".mp4") || normalizedUrl.contains(".m3u8") ||
+            normalizedUrl.contains(".ts") || normalizedUrl.contains(".flv") ||
+            normalizedUrl.startsWith("rtmp://")) {
             return true
         }
-
-        // Check Content-Type header if available
         contentType?.lowercase()?.let {
-            return it.contains("video/") || // General video content type
-                    it.contains("application/x-mpegurl") || // M3U8 specific content type
-                    it.contains("application/vnd.apple.mpegurl") // Another M3U8 specific content type
+            return it.contains("video/") || it.contains("mpegurl") || it.contains("video/x-flv")
         }
         return false
     }
 
-    private val urlCache = mutableMapOf<String, Pair<String, String?>>()
-
-    fun resolveUrl(url: String, callback: (String?, String?, String?) -> Unit) {
-        if (url.isBlank()) {
-            callback(null, null, "URL is empty")
-            return
-        }
+    fun resolveUrl(context: Context, url: String, callback: (String?, String?, String?) -> Unit) {
+        if (url.isBlank()) return callback(null, null, "URL is empty")
 
         urlCache[url]?.let { (resolved, type) ->
-            Log.d("Utils", "Using cached resolved URL: $url -> $resolved (Type: $type)")
-            callback(resolved, type, null)
-            return
+            return callback(resolved, type, null)
         }
 
-        val request = Request.Builder()
-            .url(url)
-            .head()
-            .build()
-
+        val request = Request.Builder().url(url).head().build()
         client.newCall(request).enqueue(object : okhttp3.Callback {
             override fun onFailure(call: okhttp3.Call, e: IOException) {
-                Log.e("Utils", "Failed to resolve URL: $url", e)
-                callback(null, null, "Failed to resolve URL: ${e.message}")
+                callback(null, null, e.message)
             }
 
             override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
                 val resolvedUrl = response.request.url.toString()
                 val contentType = response.header("Content-Type")
-                Log.d("Utils", "Resolved URL: $url -> $resolvedUrl (Content-Type: $contentType, HTTP Status: ${response.code})")
 
-                // If resolvedUrl is null or blank, it's a true resolution failure.
-                if (resolvedUrl.isNullOrBlank()) {
-                    callback(null, null, "Failed to resolve URL: No valid URL found after redirects or initial request.")
-                    return
-                }
-
-                // If Content-Type is available and already indicates a video stream from HEAD request, we're good.
                 if (contentType != null && isVideoStream(resolvedUrl, contentType)) {
                     urlCache[url] = Pair(resolvedUrl, contentType)
-                    callback(resolvedUrl, contentType, null) // No error
-                    return
+                    return callback(resolvedUrl, contentType, null)
                 }
 
-                // Otherwise, try a GET request to sniff content type or body for M3U8 patterns
-                val getRequest = Request.Builder()
-                    .url(resolvedUrl)
-                    .get()
-                    .build()
-
-                client.newCall(getRequest).enqueue(object : okhttp3.Callback {
-                    override fun onFailure(call: okhttp3.Call, e: IOException) {
-                        Log.e("Utils", "Failed to fetch GET for Content-Type check: $resolvedUrl", e)
-                        urlCache[url] = Pair(resolvedUrl, contentType)
-                        callback(resolvedUrl, contentType, "Failed to get full content for type check: ${e.message}")
-                    }
-
-                    override fun onResponse(call: okhttp3.Call, getResponse: okhttp3.Response) {
-                        val finalContentType = getResponse.header("Content-Type") ?: contentType
-                        val responseBody = getResponse.body?.string()
-
-                        val isStreamBasedOnBody = responseBody?.contains("#EXTM3U") == true || responseBody?.contains("#EXTINF") == true
-                        val finalResolvedUrl = getResponse.request.url.toString()
-
-                        val determinedContentType = if (isStreamBasedOnBody) "application/x-mpegurl" else finalContentType
-
-                        Log.d("Utils", "GET response for $resolvedUrl -> Final Content-Type: $determinedContentType, Is stream based on body: $isStreamBasedOnBody, HTTP Status: ${getResponse.code}")
-
-                        // Determine final error based on whether content was successfully retrieved/identified as stream
-                        val finalError = if (!getResponse.isSuccessful && !isStreamBasedOnBody && !isVideoStream(finalResolvedUrl, determinedContentType)) {
-                            "Content at resolved URL not successfully loaded: HTTP ${getResponse.code}"
-                        } else {
-                            null
-                        }
-
-                        urlCache[url] = Pair(finalResolvedUrl, determinedContentType)
-                        callback(finalResolvedUrl, determinedContentType, finalError)
-                    }
-                })
+                if (contentType?.contains("text/html") == true) {
+                    tryScrapeAndExtract(context, resolvedUrl, url, callback)
+                } else {
+                    tryGetStream(resolvedUrl, contentType, url, callback)
+                }
             }
         })
     }
 
+    private fun tryScrapeAndExtract(context: Context, resolvedUrl: String, originalUrl: String, callback: (String?, String?, String?) -> Unit) {
+        val request = Request.Builder().url(resolvedUrl).get().build()
+        client.newCall(request).enqueue(object : okhttp3.Callback {
+            override fun onFailure(call: okhttp3.Call, e: IOException) {
+                extractWithWebView(context, resolvedUrl, callback)
+            }
+            override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
+                val html = response.body?.string() ?: ""
+                val extracted = extractStreamFromHtml(html, resolvedUrl)
+                if (extracted != null) {
+                    urlCache[originalUrl] = Pair(extracted, "application/x-mpegurl")
+                    callback(extracted, "application/x-mpegurl", null)
+                } else {
+                    extractWithWebView(context, resolvedUrl, callback)
+                }
+            }
+        })
+    }
+
+    private fun extractStreamFromHtml(html: String, baseUrl: String): String? {
+        try {
+            val doc = Jsoup.parse(html, baseUrl)
+            doc.select("video source, video").forEach {
+                val src = it.attr("abs:src")
+                if (isVideoStream(src, null)) return src
+            }
+            doc.select("iframe").forEach {
+                val src = it.attr("abs:src")
+                if (isVideoStream(src, null)) return src
+            }
+            val pattern = Pattern.compile("(https?://[\\w\\d./?=&%_-]+\\.(m3u8|mpd|flv)[\\w\\d./?=&%_-]*)")
+            val matcher = pattern.matcher(html)
+            if (matcher.find()) return matcher.group(1)
+        } catch (e: Exception) {
+            Log.e("Utils", "Scraping failed", e)
+        }
+        return null
+    }
+
+    private fun tryGetStream(resolvedUrl: String, contentType: String?, originalUrl: String, callback: (String?, String?, String?) -> Unit) {
+        val request = Request.Builder().url(resolvedUrl).get().build()
+        client.newCall(request).enqueue(object : okhttp3.Callback {
+            override fun onFailure(call: okhttp3.Call, e: IOException) {
+                callback(resolvedUrl, contentType, e.message)
+            }
+            override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
+                val finalUrl = response.request.url.toString()
+                val finalType = response.header("Content-Type") ?: contentType
+                if (isVideoStream(finalUrl, finalType)) {
+                    urlCache[originalUrl] = Pair(finalUrl, finalType)
+                    callback(finalUrl, finalType, null)
+                } else {
+                    callback(null, null, "Not a video stream")
+                }
+            }
+        })
+    }
+
+    private fun extractWithWebView(context: Context, url: String, callback: (String?, String?, String?) -> Unit) {
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            try {
+                val webView = WebView(context)
+                val isFound = AtomicBoolean(false)
+                
+                webView.settings.apply {
+                    javaScriptEnabled = true
+                    domStorageEnabled = true
+                    mediaPlaybackRequiresUserGesture = false
+                    mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                }
+
+                webView.webViewClient = object : WebViewClient() {
+                    override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
+                        val requestUrl = request?.url.toString()
+                        if (isFound.get()) return null
+                        
+                        if (isVideoStream(requestUrl, null)) {
+                            if (isFound.compareAndSet(false, true)) {
+                                Log.d("Utils", "WebView caught stream: $requestUrl")
+                                callback(requestUrl, "application/x-mpegurl", null)
+                                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                                    webView.stopLoading()
+                                    webView.destroy()
+                                }
+                            }
+                        }
+                        return super.shouldInterceptRequest(view, request)
+                    }
+
+                    override fun onPageFinished(view: WebView?, url: String?) {
+                        super.onPageFinished(view, url)
+                        if (isFound.get()) return
+                        view?.evaluateJavascript("""
+                            (function() {
+                                var clickPlay = function(el) {
+                                    var ev = document.createEvent('MouseEvents');
+                                    ev.initEvent('click', true, true);
+                                    el.dispatchEvent(ev);
+                                };
+                                var items = document.querySelectorAll('button, div, a, span');
+                                for (var i = 0; i < items.length; i++) {
+                                    var item = items[i];
+                                    var txt = item.innerText.toLowerCase();
+                                    if (txt.includes('play') || item.className.toLowerCase().includes('play')) {
+                                        clickPlay(item);
+                                    }
+                                }
+                                var v = document.querySelector('video');
+                                if (v) v.play();
+                            })();
+                        """.trimIndent(), null)
+                    }
+                }
+
+                webView.loadUrl(url)
+
+                // 20s timeout cleanup
+                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                    if (isFound.compareAndSet(false, true)) {
+                        callback(null, null, "Detection timed out")
+                        webView.stopLoading()
+                        webView.destroy()
+                    }
+                }, 20000)
+            } catch (e: Exception) {
+                Log.e("Utils", "WebView failed", e)
+                callback(null, null, e.message)
+            }
+        }
+    }
 
     private fun createUnsafeSslContext(): SSLContext {
         val sslContext = SSLContext.getInstance("TLS")

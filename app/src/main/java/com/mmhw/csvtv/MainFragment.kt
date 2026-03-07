@@ -77,19 +77,23 @@ class MainFragment : BrowseSupportFragment() {
             else -> {
                 Toast.makeText(requireContext(), "Resolving URL...", Toast.LENGTH_SHORT).show()
 
-                Utils.resolveUrl(url) { resolvedUrl, contentType, error ->
-                    if (!resolvedUrl.isNullOrBlank()) {
-                        Log.d("MainFragment", "Resolved URL: $url -> $resolvedUrl, Content-Type: $contentType, isVideoStream=${Utils.isVideoStream(resolvedUrl, contentType)}")
-                        if (Utils.isVideoStream(resolvedUrl, contentType)) {
-                            Log.d("MainFragment", "Opening PlaybackFragment for resolved URL: $resolvedUrl")
-                            openPlaybackFragment(resolvedUrl)
+                Utils.resolveUrl(requireContext(), url) { resolvedUrl, contentType, error ->
+                    handler.post {
+                        if (!isAdded) return@post
+                        
+                        if (!resolvedUrl.isNullOrBlank()) {
+                            Log.d("MainFragment", "Resolved URL: $url -> $resolvedUrl, Content-Type: $contentType, isVideoStream=${Utils.isVideoStream(resolvedUrl, contentType)}")
+                            if (Utils.isVideoStream(resolvedUrl, contentType)) {
+                                Log.d("MainFragment", "Opening PlaybackFragment for resolved URL: $resolvedUrl")
+                                openPlaybackFragment(resolvedUrl)
+                            } else {
+                                Log.w("MainFragment", "URL resolved but not a video stream: $resolvedUrl")
+                                Toast.makeText(requireContext(), "Not a video stream: $resolvedUrl", Toast.LENGTH_SHORT).show()
+                            }
                         } else {
-                            Log.w("MainFragment", "URL resolved but not a video stream and WebView is disabled: $resolvedUrl")
-                            Toast.makeText(requireContext(), "Not a video stream: $resolvedUrl", Toast.LENGTH_SHORT).show()
+                            Log.w("MainFragment", "Failed to resolve URL: $url, error: $error")
+                            Toast.makeText(requireContext(), "Failed to resolve URL: $error", Toast.LENGTH_SHORT).show()
                         }
-                    } else {
-                        Log.w("MainFragment", "Failed to resolve URL: $url, error: $error")
-                        Toast.makeText(requireContext(), "Failed to resolve URL", Toast.LENGTH_SHORT).show()
                     }
                 }
             }

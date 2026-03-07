@@ -7,8 +7,9 @@ import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.Button
+import android.widget.LinearLayout
 import android.widget.ProgressBar
-import android.widget.RelativeLayout
 import android.widget.TextView
 import androidx.annotation.OptIn
 import androidx.fragment.app.Fragment
@@ -37,24 +38,20 @@ class PlaybackFragment : Fragment() {
     private var player: ExoPlayer? = null
     private var loadingIndicator: ProgressBar? = null
     private var playerView: PlayerView? = null
-    private var errorText: TextView? = null
+    private var errorLayout: LinearLayout? = null
+    private var errorMessage: TextView? = null
+    private var retryButton: Button? = null
     private var retryStatusText: TextView? = null
     private var playbackPosition: Long = 0
     private var currentMediaItem: MediaItem? = null
     private var resolvedUrl: String? = null
 
     private var retryCount = 0
-    private val maxRetries = 5 // Increased retries for better stability
-    private val retryDelayMs = 5000L // Increased delay between retries
+    private val maxRetries = 3
+    private val retryDelayMs = 5000L
     private val handler = Handler(Looper.getMainLooper())
 
-    // Buffer settings for smoother loading on slow networks
-    private val minBufferMs = 120000 // 2 minutes
-    private val maxBufferMs = 300000 // 5 minutes
-    private val bufferForPlaybackMs = 20000 // 20 seconds before starting
-    private val bufferForPlaybackAfterRebufferMs = 30000 // 30 seconds after rebuffering
-
-    private val bufferingTimeoutMs = 20000L // 20 seconds
+    private val bufferingTimeoutMs = 20000L
     private val bufferingTimeoutRunnable = Runnable {
         Log.w("PlaybackFragment", "Buffering timed out. Restarting player.")
         retryStatusText?.visibility = View.VISIBLE
@@ -73,39 +70,22 @@ class PlaybackFragment : Fragment() {
 
         resolvedUrl = arguments?.getString("video_url")
         playerView = view.findViewById(R.id.player_view)
-        errorText = view.findViewById(R.id.error_text)
+        errorLayout = view.findViewById(R.id.error_layout)
+        errorMessage = view.findViewById(R.id.error_message)
+        retryButton = view.findViewById(R.id.retry_button)
         loadingIndicator = view.findViewById(R.id.loading_indicator)
-        
-        // Add a new TextView for retry status if it exists in layout, or create one
-        retryStatusText = view.findViewById(R.id.retry_status_text) ?: createRetryStatusText(view)
-
-        (loadingIndicator?.layoutParams as? RelativeLayout.LayoutParams)?.apply {
-            addRule(RelativeLayout.CENTER_IN_PARENT, RelativeLayout.TRUE)
-        }
+        retryStatusText = view.findViewById(R.id.retry_status_text)
 
         playerView?.useController = false
         playerView?.keepScreenOn = true
 
-        playbackPosition = savedInstanceState?.getLong("playback_position", 0) ?: 0
-    }
+        retryButton?.setOnClickListener {
+            hideError()
+            retryCount = 0
+            restartPlayer()
+        }
 
-    private fun createRetryStatusText(root: View): TextView {
-        val tv = TextView(requireContext()).apply {
-            id = View.generateViewId()
-            setTextColor(android.graphics.Color.WHITE)
-            textSize = 18f
-            visibility = View.GONE
-        }
-        val params = RelativeLayout.LayoutParams(
-            RelativeLayout.LayoutParams.WRAP_CONTENT,
-            RelativeLayout.LayoutParams.WRAP_CONTENT
-        ).apply {
-            addRule(RelativeLayout.CENTER_HORIZONTAL)
-            addRule(RelativeLayout.BELOW, R.id.loading_indicator)
-            topMargin = 20
-        }
-        (root as? RelativeLayout)?.addView(tv, params)
-        return tv
+        playbackPosition = savedInstanceState?.getLong("playback_position", 0) ?: 0
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -126,9 +106,9 @@ class PlaybackFragment : Fragment() {
         loadingIndicator?.visibility = View.VISIBLE
         playerView?.visibility = View.GONE
 
+        // Optimized buffer settings for TV streams
         val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(minBufferMs, maxBufferMs, bufferForPlaybackMs, bufferForPlaybackAfterRebufferMs)
-            .setBackBuffer(30000, true) // Keep 30s in back buffer
+            .setBufferDurationsMs(30000, 60000, 2500, 5000)
             .build()
 
         val okHttpClient = OkHttpClient.Builder()
@@ -149,13 +129,20 @@ class PlaybackFragment : Fragment() {
                     .build()
                 this@PlaybackFragment.currentMediaItem = mediaItem
 
-                val mediaSource = if (urlToPlay.startsWith("rtmp://")) {
-                    val rtmpDataSourceFactory = RtmpDataSource.Factory()
-                    DefaultMediaSourceFactory(rtmpDataSourceFactory).createMediaSource(mediaItem)
-                } else {
-                    HlsMediaSource.Factory(httpDataSourceFactory)
-                        .setAllowChunklessPreparation(true)
-                        .createMediaSource(mediaItem)
+                val mediaSource = when {
+                    urlToPlay.startsWith("rtmp://") -> {
+                        val rtmpDataSourceFactory = RtmpDataSource.Factory()
+                        DefaultMediaSourceFactory(rtmpDataSourceFactory).createMediaSource(mediaItem)
+                    }
+                    urlToPlay.lowercase().endsWith(".m3u8") || urlToPlay.lowercase().contains(".m3u8?") -> {
+                         HlsMediaSource.Factory(httpDataSourceFactory)
+                            .setAllowChunklessPreparation(true)
+                            .createMediaSource(mediaItem)
+                    }
+                    else -> {
+                        // Default fallback for FLV and other progressive streams
+                        DefaultMediaSourceFactory(httpDataSourceFactory).createMediaSource(mediaItem)
+                    }
                 }
 
                 setMediaSource(mediaSource)
@@ -176,15 +163,13 @@ class PlaybackFragment : Fragment() {
                                 retryStatusText?.visibility = View.GONE
                                 playerView?.visibility = View.VISIBLE
                                 playerView?.useController = true
-                                retryCount = 0 // Reset retry count on successful play
+                                hideError()
+                                retryCount = 0
                             }
                             Player.STATE_ENDED -> {
                                 loadingIndicator?.visibility = View.GONE
-                                retryStatusText?.visibility = View.GONE
                             }
-                            Player.STATE_IDLE -> {
-                                // Do nothing
-                            }
+                            Player.STATE_IDLE -> {}
                         }
                     }
 
@@ -195,17 +180,27 @@ class PlaybackFragment : Fragment() {
                         if (retryCount < maxRetries) {
                             retryCount++
                             retryStatusText?.visibility = View.VISIBLE
-                            retryStatusText?.text = "Stream error, retrying ($retryCount/$maxRetries)..."
+                            retryStatusText?.text = "Connection error, retrying ($retryCount/$maxRetries)..."
                             handler.postDelayed({ restartPlayer() }, retryDelayMs)
                         } else {
-                            errorText?.visibility = View.VISIBLE
-                            errorText?.text = "Failed after $maxRetries attempts.\nPlease check your connection or stream source."
-                            retryStatusText?.visibility = View.GONE
+                            showError("Failed to play video stream after $maxRetries attempts. Please check the source URL.")
                         }
                     }
                 })
             }
         playerView?.player = player
+    }
+
+    private fun showError(message: String) {
+        errorMessage?.text = message
+        errorLayout?.visibility = View.VISIBLE
+        retryStatusText?.visibility = View.GONE
+        loadingIndicator?.visibility = View.GONE
+        playerView?.visibility = View.GONE
+    }
+
+    private fun hideError() {
+        errorLayout?.visibility = View.GONE
     }
 
     private fun releasePlayer() {
