@@ -1,112 +1,118 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/settings_background"
-    android:gravity="center"
-    android:orientation="vertical"
-    android:padding="48dp">
-
-    <TextView
-        style="@style/SettingTitle"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginBottom="32dp"
-        android:text="CSV Source Configuration" />
+    android:fillViewport="true">
 
     <LinearLayout
-        android:layout_width="600dp"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="@color/settings_surface"
+        android:gravity="center"
         android:orientation="vertical"
-        android:padding="24dp">
+        android:padding="48dp">
 
         <TextView
-            style="@style/SettingLabel"
+            style="@style/SettingTitle"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginBottom="8dp"
-            android:text="CSV URL or Google Sheet ID" />
+            android:layout_marginBottom="32dp"
+            android:text="CSV Source Configuration" />
 
-        <EditText
-            android:id="@+id/sheet_link_input"
-            android:layout_width="match_parent"
+        <LinearLayout
+            android:layout_width="600dp"
             android:layout_height="wrap_content"
-            android:background="@drawable/edit_text_bg"
-            android:hint="e.g. 1A2B3C4D... or https://..."
-            android:inputType="textUri"
-            android:padding="12dp"
-            android:textColor="@color/settings_primary_text"
-            android:textColorHint="@color/settings_secondary_text" />
+            android:background="@color/settings_surface"
+            android:orientation="vertical"
+            android:padding="24dp">
 
-        <TextView
-            android:id="@+id/textView"
-            style="@style/SettingDescription"
-            android:layout_width="match_parent"
+            <TextView
+                style="@style/SettingLabel"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="8dp"
+                android:text="CSV URL or Google Sheet ID" />
+
+            <EditText
+                android:id="@+id/sheet_link_input"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@drawable/edit_text_bg"
+                android:hint="e.g. 1A2B3C4D... or https://..."
+                android:inputType="textUri"
+                android:padding="12dp"
+                android:textColor="@color/settings_primary_text"
+                android:textColorHint="@color/settings_secondary_text" />
+
+            <TextView
+                android:id="@+id/textView"
+                style="@style/SettingDescription"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:text="Tip: For Google Sheets, use the 'Published CSV ID'. Publish your sheet via File > Share > Publish to web, choose CSV, and copy the ID from the URL." />
+
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="600dp"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:gravity="center"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/insert_path_button"
+                style="@style/SettingsButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="8dp"
+                android:layout_weight="1"
+                android:text="Insert Path" />
+
+            <Button
+                android:id="@+id/select_csv_button"
+                style="@style/SettingsButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="8dp"
+                android:layout_weight="1"
+                android:text="Select File" />
+
+            <Button
+                android:id="@+id/paste_button"
+                style="@style/SettingsButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Paste" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="600dp"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
-            android:text="Tip: For Google Sheets, use the 'Published CSV ID'. Publish your sheet via File > Share > Publish to web, choose CSV, and copy the ID from the URL." />
+            android:gravity="center"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/cancel_button"
+                style="@style/SettingsButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="8dp"
+                android:layout_weight="1"
+                android:text="Cancel"
+                android:visibility="gone" />
+
+            <Button
+                android:id="@+id/save_button"
+                style="@style/SettingsButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="2"
+                android:text="Save and Continue" />
+        </LinearLayout>
 
     </LinearLayout>
-
-    <LinearLayout
-        android:layout_width="600dp"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="24dp"
-        android:gravity="center"
-        android:orientation="horizontal">
-
-        <Button
-            android:id="@+id/insert_path_button"
-            style="@style/SettingsButton"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_marginEnd="8dp"
-            android:layout_weight="1"
-            android:text="Insert Path" />
-
-        <Button
-            android:id="@+id/select_csv_button"
-            style="@style/SettingsButton"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_marginEnd="8dp"
-            android:layout_weight="1"
-            android:text="Select File" />
-
-        <Button
-            android:id="@+id/paste_button"
-            style="@style/SettingsButton"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="Paste" />
-    </LinearLayout>
-
-    <LinearLayout
-        android:layout_width="600dp"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="16dp"
-        android:gravity="center"
-        android:orientation="horizontal">
-
-        <Button
-            android:id="@+id/cancel_button"
-            style="@style/SettingsButton"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_marginEnd="8dp"
-            android:layout_weight="1"
-            android:text="Cancel"
-            android:visibility="gone" />
-
-        <Button
-            android:id="@+id/save_button"
-            style="@style/SettingsButton"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="2"
-            android:text="Save and Continue" />
-    </LinearLayout>
-
-</LinearLayout>
+</ScrollView>

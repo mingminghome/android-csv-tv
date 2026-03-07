@@ -61,7 +61,6 @@ class SetupActivity : FragmentActivity() {
 
     private fun validateAndSaveSheetLink(finalSheetLink: String) {
         Utils.fetchSheetData(this, finalSheetLink) { videos, error ->
-            val sharedPrefs = getSharedPreferences("AppPrefs", MODE_PRIVATE)
             if (error != null) {
                 val defaultCsvLink = "android.resource://${packageName}/raw/default_csv"
                 saveSheetLink(defaultCsvLink)

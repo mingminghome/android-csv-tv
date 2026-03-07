@@ -36,26 +36,32 @@ import javax.net.ssl.X509TrustManager
 @UnstableApi
 class PlaybackFragment : Fragment() {
     private var player: ExoPlayer? = null
-    private var loadingIndicator: ProgressBar? = null
     private var playerView: PlayerView? = null
+    
+    private var loadingContainer: LinearLayout? = null
+    private var loadingIndicator: ProgressBar? = null
+    private var retryStatusText: TextView? = null
+    
     private var errorLayout: LinearLayout? = null
     private var errorMessage: TextView? = null
     private var retryButton: Button? = null
-    private var retryStatusText: TextView? = null
+    private var cancelButton: Button? = null
+    
     private var playbackPosition: Long = 0
-    private var currentMediaItem: MediaItem? = null
+    private var initialUrl: String? = null
     private var resolvedUrl: String? = null
+    private var mimeType: String? = null
 
     private var retryCount = 0
     private val maxRetries = 3
-    private val retryDelayMs = 5000L
+    private val retryDelayMs = 3000L
     private val handler = Handler(Looper.getMainLooper())
+    private var hasAttemptedHlsFallback = false
 
-    private val bufferingTimeoutMs = 20000L
+    private val bufferingTimeoutMs = 25000L
     private val bufferingTimeoutRunnable = Runnable {
         Log.w("PlaybackFragment", "Buffering timed out. Restarting player.")
-        retryStatusText?.visibility = View.VISIBLE
-        retryStatusText?.text = "Connection slow, reconnecting..."
+        showRetryStatus("Connection slow, reconnecting...")
         restartPlayer()
     }
 
@@ -68,24 +74,72 @@ class PlaybackFragment : Fragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
 
-        resolvedUrl = arguments?.getString("video_url")
+        initialUrl = arguments?.getString("video_url")
+        
         playerView = view.findViewById(R.id.player_view)
+        loadingContainer = view.findViewById(R.id.loading_container)
+        loadingIndicator = view.findViewById(R.id.loading_indicator)
+        retryStatusText = view.findViewById(R.id.retry_status_text)
+        
         errorLayout = view.findViewById(R.id.error_layout)
         errorMessage = view.findViewById(R.id.error_message)
         retryButton = view.findViewById(R.id.retry_button)
-        loadingIndicator = view.findViewById(R.id.loading_indicator)
-        retryStatusText = view.findViewById(R.id.retry_status_text)
+        cancelButton = view.findViewById(R.id.cancel_button)
 
-        playerView?.useController = false
+        playerView?.useController = true
         playerView?.keepScreenOn = true
 
         retryButton?.setOnClickListener {
             hideError()
             retryCount = 0
-            restartPlayer()
+            hasAttemptedHlsFallback = false
+            startResolutionAndPlay()
+        }
+        
+        cancelButton?.setOnClickListener {
+            requireActivity().onBackPressedDispatcher.onBackPressed()
         }
 
         playbackPosition = savedInstanceState?.getLong("playback_position", 0) ?: 0
+        
+        startResolutionAndPlay()
+    }
+
+    private fun startResolutionAndPlay() {
+        val url = initialUrl ?: return
+        showLoading("Resolving stream...")
+        
+        Utils.cancelOngoingResolution()
+        Utils.resolveUrl(requireContext(), url) { resolved, type, error ->
+            handler.post {
+                if (!isAdded) return@post
+                if (resolved != null) {
+                    resolvedUrl = resolved
+                    mimeType = type
+                    initializePlayer()
+                } else if (error != "Canceled") {
+                    showError("Failed to resolve URL: $error")
+                }
+            }
+        }
+    }
+
+    private fun showLoading(status: String? = null) {
+        errorLayout?.visibility = View.GONE
+        loadingContainer?.visibility = View.VISIBLE
+        if (status != null) {
+            retryStatusText?.visibility = View.VISIBLE
+            retryStatusText?.text = status
+        }
+    }
+
+    private fun showRetryStatus(status: String) {
+        retryStatusText?.visibility = View.VISIBLE
+        retryStatusText?.text = status
+    }
+
+    private fun hideLoading() {
+        loadingContainer?.visibility = View.GONE
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -103,13 +157,8 @@ class PlaybackFragment : Fragment() {
             return
         }
 
-        loadingIndicator?.visibility = View.VISIBLE
+        showLoading("Connecting to stream...")
         playerView?.visibility = View.GONE
-
-        // Optimized buffer settings for TV streams
-        val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(30000, 60000, 2500, 5000)
-            .build()
 
         val okHttpClient = OkHttpClient.Builder()
             .sslSocketFactory(createUnsafeSslContext().socketFactory, createUnsafeTrustManager())
@@ -118,31 +167,47 @@ class PlaybackFragment : Fragment() {
             .readTimeout(20, TimeUnit.SECONDS)
             .build()
 
-        val httpDataSourceFactory = OkHttpDataSource.Factory(okHttpClient).setUserAgent("ExoPlayer-CSVTV")
+        val httpDataSourceFactory = OkHttpDataSource.Factory(okHttpClient).setUserAgent(Utils.USER_AGENT)
+
+        val sharedPrefs = requireContext().getSharedPreferences("AppPrefs", android.content.Context.MODE_PRIVATE)
+        val qualitySetting = sharedPrefs.getString("video_quality", "auto") ?: "auto"
 
         player = ExoPlayer.Builder(requireContext())
-            .setLoadControl(loadControl)
+            .setLoadControl(DefaultLoadControl.Builder().setBufferDurationsMs(30000, 60000, 2500, 5000).build())
             .build().apply {
+                
+                // Bitrate Override: Strictly cap resolution if defined in settings
+                if (qualitySetting != "auto") {
+                    val maxRes = qualitySetting.toIntOrNull() ?: Int.MAX_VALUE
+                    trackSelectionParameters = trackSelectionParameters.buildUpon()
+                        .setMaxVideoSize(Int.MAX_VALUE, maxRes)
+                        .setForceLowestBitrate(false) // Prefers best quality WITHIN the resolution cap
+                        .build()
+                    Log.d("PlaybackFragment", "Overriding auto-bitrate: Cap vertical resolution at ${maxRes}p")
+                } else {
+                    trackSelectionParameters = trackSelectionParameters.buildUpon()
+                        .clearVideoSizeConstraints()
+                        .build()
+                }
+
                 val mediaItem = MediaItem.Builder()
                     .setUri(urlToPlay)
+                    .setMimeType(mimeType)
                     .setMediaMetadata(MediaMetadata.Builder().setTitle("Video Stream").build())
                     .build()
-                this@PlaybackFragment.currentMediaItem = mediaItem
+
+                // Dynamically select source based on identified type
+                val isHls = mimeType?.lowercase()?.let { 
+                    it.contains("mpegurl") || it.contains("m3u8") || it.contains("apple")
+                } == true || urlToPlay.lowercase().contains(".m3u8")
 
                 val mediaSource = when {
-                    urlToPlay.startsWith("rtmp://") -> {
-                        val rtmpDataSourceFactory = RtmpDataSource.Factory()
-                        DefaultMediaSourceFactory(rtmpDataSourceFactory).createMediaSource(mediaItem)
-                    }
-                    urlToPlay.lowercase().endsWith(".m3u8") || urlToPlay.lowercase().contains(".m3u8?") -> {
-                         HlsMediaSource.Factory(httpDataSourceFactory)
-                            .setAllowChunklessPreparation(true)
-                            .createMediaSource(mediaItem)
-                    }
-                    else -> {
-                        // Default fallback for FLV and other progressive streams
-                        DefaultMediaSourceFactory(httpDataSourceFactory).createMediaSource(mediaItem)
-                    }
+                    isHls -> HlsMediaSource.Factory(httpDataSourceFactory)
+                        .setAllowChunklessPreparation(true)
+                        .createMediaSource(mediaItem)
+                    urlToPlay.startsWith("rtmp://") || mimeType == "video/x-rtmp" -> 
+                        DefaultMediaSourceFactory(RtmpDataSource.Factory()).createMediaSource(mediaItem)
+                    else -> DefaultMediaSourceFactory(httpDataSourceFactory).createMediaSource(mediaItem)
                 }
 
                 setMediaSource(mediaSource)
@@ -155,35 +220,38 @@ class PlaybackFragment : Fragment() {
                         handler.removeCallbacks(bufferingTimeoutRunnable)
                         when (playbackState) {
                             Player.STATE_BUFFERING -> {
-                                loadingIndicator?.visibility = View.VISIBLE
+                                showLoading("Buffering...")
                                 handler.postDelayed(bufferingTimeoutRunnable, bufferingTimeoutMs)
                             }
                             Player.STATE_READY -> {
-                                loadingIndicator?.visibility = View.GONE
-                                retryStatusText?.visibility = View.GONE
+                                hideLoading()
                                 playerView?.visibility = View.VISIBLE
-                                playerView?.useController = true
                                 hideError()
                                 retryCount = 0
+                                hasAttemptedHlsFallback = false
                             }
-                            Player.STATE_ENDED -> {
-                                loadingIndicator?.visibility = View.GONE
-                            }
-                            Player.STATE_IDLE -> {}
+                            Player.STATE_ENDED -> hideLoading()
+                            else -> {}
                         }
                     }
 
                     override fun onPlayerError(error: PlaybackException) {
-                        Log.e("PlaybackFragment", "Player error: ${error.message}")
-                        loadingIndicator?.visibility = View.GONE
+                        Log.e("PlaybackFragment", "Player error: ${error.errorCodeName}")
+                        hideLoading()
                         
+                        if (!hasAttemptedHlsFallback && error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED) {
+                            hasAttemptedHlsFallback = true
+                            mimeType = "application/x-mpegurl"
+                            handler.postDelayed({ restartPlayer() }, 500)
+                            return
+                        }
+
                         if (retryCount < maxRetries) {
                             retryCount++
-                            retryStatusText?.visibility = View.VISIBLE
-                            retryStatusText?.text = "Connection error, retrying ($retryCount/$maxRetries)..."
+                            showLoading("Error, retrying ($retryCount/$maxRetries)...")
                             handler.postDelayed({ restartPlayer() }, retryDelayMs)
                         } else {
-                            showError("Failed to play video stream after $maxRetries attempts. Please check the source URL.")
+                            showError("Unable to play stream after several attempts. The link might be dead or the format is incompatible.")
                         }
                     }
                 })
@@ -194,8 +262,7 @@ class PlaybackFragment : Fragment() {
     private fun showError(message: String) {
         errorMessage?.text = message
         errorLayout?.visibility = View.VISIBLE
-        retryStatusText?.visibility = View.GONE
-        loadingIndicator?.visibility = View.GONE
+        loadingContainer?.visibility = View.GONE
         playerView?.visibility = View.GONE
     }
 
@@ -218,7 +285,7 @@ class PlaybackFragment : Fragment() {
 
     override fun onStart() {
         super.onStart()
-        initializePlayer()
+        if (resolvedUrl != null) initializePlayer()
     }
 
     override fun onResume() {
@@ -233,12 +300,14 @@ class PlaybackFragment : Fragment() {
 
     override fun onStop() {
         super.onStop()
+        Utils.cancelOngoingResolution()
         releasePlayer()
     }
 
     override fun onDestroyView() {
         super.onDestroyView()
         handler.removeCallbacksAndMessages(null)
+        Utils.cancelOngoingResolution()
         releasePlayer()
     }
 
