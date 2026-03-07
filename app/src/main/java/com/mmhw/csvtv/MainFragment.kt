@@ -63,16 +63,9 @@ class MainFragment : BrowseSupportFragment() {
                 return
             }
             url.equals("settings", ignoreCase = true) || title.equals("Settings", ignoreCase = true) -> {
-                // *** CHANGE: Ensure everything stops when going to Settings ***
-
-                // 1. Pop all fragments from the back stack to destroy any open WebView or PlaybackFragment.
                 parentFragmentManager.popBackStack(null, FragmentManager.POP_BACK_STACK_INCLUSIVE)
-
-                // 2. Start the Setup activity.
                 val intent = Intent(requireContext(), SetupActivity::class.java)
                 startActivity(intent)
-
-                // 3. Finish the current MainActivity to ensure a clean start after setup is complete.
                 requireActivity().finish()
                 return
             }
@@ -91,13 +84,12 @@ class MainFragment : BrowseSupportFragment() {
                             Log.d("MainFragment", "Opening PlaybackFragment for resolved URL: $resolvedUrl")
                             openPlaybackFragment(resolvedUrl)
                         } else {
-                            Log.d("MainFragment", "Opening WebViewFragment for resolved URL: $resolvedUrl")
-                            openWebViewFragment(resolvedUrl)
+                            Log.w("MainFragment", "URL resolved but not a video stream and WebView is disabled: $resolvedUrl")
+                            Toast.makeText(requireContext(), "Not a video stream: $resolvedUrl", Toast.LENGTH_SHORT).show()
                         }
                     } else {
                         Log.w("MainFragment", "Failed to resolve URL: $url, error: $error")
-                        Log.d("MainFragment", "Opening WebViewFragment for URL: $url")
-                        openWebViewFragment(url)
+                        Toast.makeText(requireContext(), "Failed to resolve URL", Toast.LENGTH_SHORT).show()
                     }
                 }
             }
@@ -115,18 +107,6 @@ class MainFragment : BrowseSupportFragment() {
         val fragment = PlaybackFragment().apply {
             arguments = Bundle().apply {
                 putString("video_url", url)
-            }
-        }
-        parentFragmentManager.beginTransaction()
-            .replace(R.id.fragment_container, fragment)
-            .addToBackStack(null)
-            .commit()
-    }
-
-    private fun openWebViewFragment(url: String) {
-        val fragment = WebViewFragment().apply {
-            arguments = Bundle().apply {
-                putString("url", url)
             }
         }
         parentFragmentManager.beginTransaction()

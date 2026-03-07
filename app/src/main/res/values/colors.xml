@@ -1,4 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="red">#FF0000</color>
+    <!-- Settings Page Colors -->
+    <color name="settings_background">#121212</color>
+    <color name="settings_surface">#1E1E1E</color>
+    <color name="settings_primary_text">#E8EAED</color>
+    <color name="settings_secondary_text">#9AA0A6</color>
+    <color name="settings_accent">#8AB4F8</color>
+    <color name="settings_button_focused">#FFFFFF</color>
+    <color name="settings_button_unfocused">#3C4043</color>
+    <color name="settings_input_bg">#2A2E32</color>
 </resources>

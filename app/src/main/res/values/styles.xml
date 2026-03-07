@@ -9,9 +9,39 @@
         <item name="android:textSize">24sp</item>
     </style>
 
-    <style name="SetupTheme" parent="Theme.AppCompat.Light.DarkActionBar">
-        <!-- Customize the theme for SetupActivity if needed -->
-        <item name="colorPrimary">@android:color/black</item>
-        <item name="colorAccent">@android:color/white</item>
+    <style name="SetupTheme" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowBackground">@color/settings_background</item>
+        <item name="colorPrimary">@color/settings_background</item>
+        <item name="colorAccent">@color/settings_accent</item>
+    </style>
+
+    <!-- Settings Specific Styles -->
+    <style name="SettingLabel">
+        <item name="android:textColor">@color/settings_secondary_text</item>
+        <item name="android:textSize">14sp</item>
+        <item name="android:textAllCaps">true</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+    </style>
+
+    <style name="SettingTitle">
+        <item name="android:textColor">@color/settings_primary_text</item>
+        <item name="android:textSize">28sp</item>
+        <item name="android:fontFamily">sans-serif-light</item>
+    </style>
+
+    <style name="SettingDescription">
+        <item name="android:textColor">@color/settings_secondary_text</item>
+        <item name="android:textSize">14sp</item>
+        <item name="android:lineSpacingMultiplier">1.2</item>
+    </style>
+
+    <style name="SettingsButton" parent="Widget.AppCompat.Button">
+        <item name="android:background">@drawable/settings_btn_selector</item>
+        <item name="android:textColor">@color/settings_primary_text</item>
+        <item name="android:focusable">true</item>
+        <item name="android:clickable">true</item>
+        <item name="android:paddingStart">24dp</item>
+        <item name="android:paddingEnd">24dp</item>
+        <item name="android:textAllCaps">false</item>
     </style>
 </resources>

@@ -54,6 +54,9 @@ class WebViewFragment : Fragment() {
     private val keyResetHandler = Handler(Looper.getMainLooper())
     private val keyResetRunnable = Runnable { lastMoveKeyCode = -1 }
 
+    // Use a desktop User-Agent to force desktop site layouts
+    private val DESKTOP_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
 
     override fun onCreateView(
         inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
@@ -133,7 +136,8 @@ class WebViewFragment : Fragment() {
             setSupportMultipleWindows(true)
             javaScriptCanOpenWindowsAutomatically = true
             allowContentAccess = true
-            setSupportZoom(false)
+            setSupportZoom(true) // Enable zoom for desktop-style viewing
+            userAgentString = DESKTOP_USER_AGENT
         }
 
         webView.addJavascriptInterface(AndroidBridge(this), "AndroidBridge")
@@ -143,6 +147,7 @@ class WebViewFragment : Fragment() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 updateContentDimensions()
+                injectHideFootersScript()
             }
 
             @Suppress("DEPRECATION")
@@ -217,6 +222,32 @@ class WebViewFragment : Fragment() {
         webView.loadUrl(url)
         webView.isFocusable = false
         webView.isFocusableInTouchMode = false
+    }
+
+    private fun injectHideFootersScript() {
+        val js = """
+            (function() {
+                var css = 'div[style*="position: fixed"], div[style*="position: sticky"], footer, .cookie-banner, .footer-menu, .mobile-only { display: none !important; }';
+                var style = document.createElement('style');
+                style.type = 'text/css';
+                style.appendChild(document.createTextNode(css));
+                document.head.appendChild(style);
+                
+                // Hide floating elements based on position
+                var all = document.getElementsByTagName("*");
+                for (var i=0; i < all.length; i++) {
+                    var style = window.getComputedStyle(all[i]);
+                    if (style.position === 'fixed' || style.position === 'sticky') {
+                        var rect = all[i].getBoundingClientRect();
+                        // Hide if element is at the bottom of the screen
+                        if (rect.bottom >= window.innerHeight - 50 || rect.top >= window.innerHeight * 0.8) {
+                             all[i].style.display = 'none';
+                        }
+                    }
+                }
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(js, null)
     }
 
     class AndroidBridge(private val fragment: WebViewFragment) {
@@ -404,7 +435,7 @@ class WebViewFragment : Fragment() {
             if (deltaX < 0 && pointerX < scrollThreshold && webView.scrollX > 0) {
                 webView.scrollBy(-pointerSpeed.toInt(), 0)
             } else if (deltaX > 0 && pointerX > container.width - pointer.width - scrollThreshold) {
-                val maxScrollX = (contentWidth * webView.scaleX - container.width).toInt().coerceAtLeast(0)
+                val maxScrollX = (contentWidth * webView.scrollX - container.width).toInt().coerceAtLeast(0)
                 if (webView.scrollX < maxScrollX) webView.scrollBy(pointerSpeed.toInt(), 0)
             }
 

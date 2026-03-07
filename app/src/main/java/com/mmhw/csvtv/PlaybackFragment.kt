@@ -10,12 +10,13 @@ import android.view.ViewGroup
 import android.widget.ProgressBar
 import android.widget.RelativeLayout
 import android.widget.TextView
-import android.widget.Toast
+import androidx.annotation.OptIn
 import androidx.fragment.app.Fragment
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.rtmp.RtmpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
@@ -31,32 +32,33 @@ import javax.net.ssl.SSLContext
 import javax.net.ssl.TrustManager
 import javax.net.ssl.X509TrustManager
 
+@UnstableApi
 class PlaybackFragment : Fragment() {
     private var player: ExoPlayer? = null
     private var loadingIndicator: ProgressBar? = null
     private var playerView: PlayerView? = null
     private var errorText: TextView? = null
+    private var retryStatusText: TextView? = null
     private var playbackPosition: Long = 0
     private var currentMediaItem: MediaItem? = null
-    private var currentSurface: Any? = null
     private var resolvedUrl: String? = null
 
     private var retryCount = 0
-    private val maxRetries = 3
-    private val retryDelayMs = 3000L
+    private val maxRetries = 5 // Increased retries for better stability
+    private val retryDelayMs = 5000L // Increased delay between retries
     private val handler = Handler(Looper.getMainLooper())
 
-    private val minBufferMs = 60000
-    private val maxBufferMs = 120000
-    private val bufferForPlaybackMs = 5000
-    private val bufferForPlaybackAfterRebufferMs = 10000
+    // Buffer settings for smoother loading on slow networks
+    private val minBufferMs = 120000 // 2 minutes
+    private val maxBufferMs = 300000 // 5 minutes
+    private val bufferForPlaybackMs = 20000 // 20 seconds before starting
+    private val bufferForPlaybackAfterRebufferMs = 30000 // 30 seconds after rebuffering
 
-    private val BUFFERING_TIMEOUT_MS = 10000L // 10 seconds
+    private val bufferingTimeoutMs = 20000L // 20 seconds
     private val bufferingTimeoutRunnable = Runnable {
         Log.w("PlaybackFragment", "Buffering timed out. Restarting player.")
-        context?.let {
-            Toast.makeText(it, "Stream is taking too long to load. Reloading...", Toast.LENGTH_LONG).show()
-        }
+        retryStatusText?.visibility = View.VISIBLE
+        retryStatusText?.text = "Connection slow, reconnecting..."
         restartPlayer()
     }
 
@@ -69,67 +71,74 @@ class PlaybackFragment : Fragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
 
-        val urlFromArgs = arguments?.getString("video_url") ?: return
-        playerView = view.findViewById<PlayerView>(R.id.player_view)
-        errorText = view.findViewById<TextView>(R.id.error_text)
-        loadingIndicator = view.findViewById<ProgressBar>(R.id.loading_indicator)
+        resolvedUrl = arguments?.getString("video_url")
+        playerView = view.findViewById(R.id.player_view)
+        errorText = view.findViewById(R.id.error_text)
+        loadingIndicator = view.findViewById(R.id.loading_indicator)
+        
+        // Add a new TextView for retry status if it exists in layout, or create one
+        retryStatusText = view.findViewById(R.id.retry_status_text) ?: createRetryStatusText(view)
 
         (loadingIndicator?.layoutParams as? RelativeLayout.LayoutParams)?.apply {
             addRule(RelativeLayout.CENTER_IN_PARENT, RelativeLayout.TRUE)
         }
 
-        loadingIndicator?.visibility = View.VISIBLE
-        playerView?.visibility = View.GONE
-        errorText?.visibility = View.GONE
-
         playerView?.useController = false
         playerView?.keepScreenOn = true
 
         playbackPosition = savedInstanceState?.getLong("playback_position", 0) ?: 0
-        resolvedUrl = urlFromArgs
-        initializePlayer(urlFromArgs)
+    }
+
+    private fun createRetryStatusText(root: View): TextView {
+        val tv = TextView(requireContext()).apply {
+            id = View.generateViewId()
+            setTextColor(android.graphics.Color.WHITE)
+            textSize = 18f
+            visibility = View.GONE
+        }
+        val params = RelativeLayout.LayoutParams(
+            RelativeLayout.LayoutParams.WRAP_CONTENT,
+            RelativeLayout.LayoutParams.WRAP_CONTENT
+        ).apply {
+            addRule(RelativeLayout.CENTER_HORIZONTAL)
+            addRule(RelativeLayout.BELOW, R.id.loading_indicator)
+            topMargin = 20
+        }
+        (root as? RelativeLayout)?.addView(tv, params)
+        return tv
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
-        outState.putLong("playback_position", player?.currentPosition ?: playbackPosition)
-        Log.d("PlaybackFragment", "Saving playback position: ${player?.currentPosition ?: playbackPosition}")
+        val currentPos = player?.currentPosition ?: playbackPosition
+        outState.putLong("playback_position", currentPos)
     }
 
-    private fun initializePlayer(urlToPlay: String) {
-        val newSurface = playerView?.videoSurfaceView
-        if (player != null && currentSurface == newSurface && player?.playbackState != Player.STATE_ENDED) {
-            player?.seekTo(playbackPosition)
+    @OptIn(UnstableApi::class)
+    private fun initializePlayer() {
+        val urlToPlay = resolvedUrl ?: return
+        
+        if (player != null) {
             player?.playWhenReady = true
-            Log.d("PlaybackFragment", "Reusing existing player, seeking to $playbackPosition")
             return
         }
-        currentSurface = newSurface
 
-        if (retryCount == 0) {
-            retryCount = 0
-        }
-
-        player?.release()
+        loadingIndicator?.visibility = View.VISIBLE
+        playerView?.visibility = View.GONE
 
         val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(
-                minBufferMs,
-                maxBufferMs,
-                bufferForPlaybackMs,
-                bufferForPlaybackAfterRebufferMs
-            )
+            .setBufferDurationsMs(minBufferMs, maxBufferMs, bufferForPlaybackMs, bufferForPlaybackAfterRebufferMs)
+            .setBackBuffer(30000, true) // Keep 30s in back buffer
             .build()
 
         val okHttpClient = OkHttpClient.Builder()
             .sslSocketFactory(createUnsafeSslContext().socketFactory, createUnsafeTrustManager())
             .hostnameVerifier { _, _ -> true }
-            .connectTimeout(10, TimeUnit.SECONDS)
-            .readTimeout(10, TimeUnit.SECONDS)
+            .connectTimeout(20, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
             .build()
 
-        val httpDataSourceFactory = OkHttpDataSource.Factory(okHttpClient)
-            .setUserAgent("ExoPlayer-CSVTV")
+        val httpDataSourceFactory = OkHttpDataSource.Factory(okHttpClient).setUserAgent("ExoPlayer-CSVTV")
 
         player = ExoPlayer.Builder(requireContext())
             .setLoadControl(loadControl)
@@ -152,101 +161,90 @@ class PlaybackFragment : Fragment() {
                 setMediaSource(mediaSource)
                 prepare()
                 seekTo(playbackPosition)
-                playWhenReady = false
+                playWhenReady = true
 
                 addListener(object : Player.Listener {
                     override fun onPlaybackStateChanged(playbackState: Int) {
-                        handler.removeCallbacks(bufferingTimeoutRunnable) // Always remove callback first
+                        handler.removeCallbacks(bufferingTimeoutRunnable)
                         when (playbackState) {
                             Player.STATE_BUFFERING -> {
                                 loadingIndicator?.visibility = View.VISIBLE
-                                playerView?.visibility = View.GONE
-                                errorText?.visibility = View.GONE
-                                playerView?.useController = false
-                                playerView?.hideController()
-                                Log.d("PlaybackFragment", "Playback state changed: BUFFERING")
-                                handler.postDelayed(bufferingTimeoutRunnable, BUFFERING_TIMEOUT_MS)
+                                handler.postDelayed(bufferingTimeoutRunnable, bufferingTimeoutMs)
                             }
                             Player.STATE_READY -> {
-                                loadingIndicator?.animate()?.alpha(0f)?.setDuration(200)?.withEndAction {
-                                    loadingIndicator?.visibility = View.GONE
-                                    loadingIndicator?.alpha = 1f
-                                }?.start()
-                                playerView?.alpha = 0f
+                                loadingIndicator?.visibility = View.GONE
+                                retryStatusText?.visibility = View.GONE
                                 playerView?.visibility = View.VISIBLE
-                                playerView?.animate()?.alpha(1f)?.setDuration(200)?.start()
                                 playerView?.useController = true
-                                playWhenReady = true
-                                Log.d("PlaybackFragment", "Playback state changed: READY")
+                                retryCount = 0 // Reset retry count on successful play
                             }
                             Player.STATE_ENDED -> {
                                 loadingIndicator?.visibility = View.GONE
-                                playerView?.visibility = View.VISIBLE
-                                playerView?.useController = true
-                                Log.d("PlaybackFragment", "Playback state changed: ENDED")
+                                retryStatusText?.visibility = View.GONE
                             }
                             Player.STATE_IDLE -> {
-                                loadingIndicator?.visibility = View.GONE
-                                playerView?.visibility = View.GONE
-                                playerView?.useController = true
-                                Log.d("PlaybackFragment", "Playback state changed: IDLE")
+                                // Do nothing
                             }
                         }
                     }
 
                     override fun onPlayerError(error: PlaybackException) {
+                        Log.e("PlaybackFragment", "Player error: ${error.message}")
                         loadingIndicator?.visibility = View.GONE
-                        playerView?.visibility = View.GONE
+                        
                         if (retryCount < maxRetries) {
                             retryCount++
-                            errorText?.visibility = View.VISIBLE
-                            errorText?.text = "Playback error, retrying ($retryCount/$maxRetries)..."
-                            Log.d("PlaybackFragment", "Player error, retrying ($retryCount/$maxRetries): ${error.message}")
-                            handler.postDelayed({
-                                resolvedUrl?.let { resolvedString ->
-                                    currentMediaItem?.let { mediaItemToRetry ->
-                                        val mediaSource = if (resolvedString.startsWith("rtmp://")) {
-                                            val rtmpDataSourceFactory = RtmpDataSource.Factory()
-                                            DefaultMediaSourceFactory(rtmpDataSourceFactory).createMediaSource(mediaItemToRetry)
-                                        } else {
-                                            HlsMediaSource.Factory(httpDataSourceFactory)
-                                                .setAllowChunklessPreparation(true)
-                                                .createMediaSource(mediaItemToRetry)
-                                        }
-                                        player?.setMediaSource(mediaSource)
-                                        player?.prepare()
-                                        player?.seekTo(playbackPosition)
-                                        player?.playWhenReady = true
-                                    } ?: Log.e("PlaybackFragment", "Retry failed: currentMediaItem is null")
-                                } ?: Log.e("PlaybackFragment", "Retry failed: resolvedUrl is null")
-                            }, retryDelayMs)
+                            retryStatusText?.visibility = View.VISIBLE
+                            retryStatusText?.text = "Stream error, retrying ($retryCount/$maxRetries)..."
+                            handler.postDelayed({ restartPlayer() }, retryDelayMs)
                         } else {
                             errorText?.visibility = View.VISIBLE
-                            errorText?.text = "Failed to play stream after $maxRetries attempts: ${error.message}"
-                            playerView?.useController = true
-                            Log.e("PlaybackFragment", "Failed to play stream after $maxRetries attempts: ${error.message}")
-                            handler.postDelayed({
-                                parentFragmentManager.popBackStack()
-                            }, 2000L)
+                            errorText?.text = "Failed after $maxRetries attempts.\nPlease check your connection or stream source."
+                            retryStatusText?.visibility = View.GONE
                         }
-                    }
-
-                    override fun onRenderedFirstFrame() {
-                        playbackPosition = player?.currentPosition ?: 0
-                        Log.d("PlaybackFragment", "First frame rendered at position: $playbackPosition")
                     }
                 })
             }
-
         playerView?.player = player
-        Log.d("PlaybackFragment", "Player initialized with URL: $urlToPlay")
+    }
+
+    private fun releasePlayer() {
+        player?.let {
+            playbackPosition = it.currentPosition
+            it.release()
+            player = null
+        }
     }
 
     private fun restartPlayer() {
-        playbackPosition = player?.currentPosition ?: playbackPosition
-        player?.release()
-        player = null
-        resolvedUrl?.let { initializePlayer(it) }
+        releasePlayer()
+        initializePlayer()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        initializePlayer()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        player?.playWhenReady = true
+    }
+
+    override fun onPause() {
+        super.onPause()
+        player?.playWhenReady = false
+    }
+
+    override fun onStop() {
+        super.onStop()
+        releasePlayer()
+    }
+
+    override fun onDestroyView() {
+        super.onDestroyView()
+        handler.removeCallbacksAndMessages(null)
+        releasePlayer()
     }
 
     private fun createUnsafeSslContext(): SSLContext {
@@ -261,35 +259,5 @@ class PlaybackFragment : Fragment() {
             override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
             override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
         }
-    }
-
-    override fun onStart() {
-        super.onStart()
-        player?.playWhenReady = true
-        Log.d("PlaybackFragment", "onStart: Setting playWhenReady to true")
-    }
-
-    override fun onStop() {
-        super.onStop()
-        player?.let {
-            playbackPosition = it.currentPosition
-            it.playWhenReady = false
-            Log.d("PlaybackFragment", "onStop: Pausing playback, saving position: $playbackPosition")
-        }
-    }
-
-    override fun onDestroyView() {
-        super.onDestroyView()
-        handler.removeCallbacksAndMessages(null)
-        playerView?.keepScreenOn = false
-        player?.release()
-        player = null
-        playerView = null
-        loadingIndicator = null
-        errorText = null
-        currentSurface = null
-        resolvedUrl = null
-        currentMediaItem = null
-        Log.d("PlaybackFragment", "onDestroyView: Player released and views nullified")
     }
 }
