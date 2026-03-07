@@ -11,7 +11,36 @@
         android:layout_height="match_parent"
         app:use_controller="true" />
 
-    <!-- Error Overlay -->
+    <!-- Unified Loading & Retry Status -->
+    <LinearLayout
+        android:id="@+id/loading_container"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_centerInParent="true"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <ProgressBar
+            android:id="@+id/loading_indicator"
+            android:layout_width="64dp"
+            android:layout_height="64dp"
+            android:indeterminateTint="@color/settings_accent" />
+
+        <TextView
+            android:id="@+id/retry_status_text"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:background="#80000000"
+            android:paddingHorizontal="16dp"
+            android:paddingVertical="8dp"
+            android:textColor="@android:color/white"
+            android:textSize="16sp"
+            android:visibility="gone" />
+    </LinearLayout>
+
+    <!-- Unified Error Overlay -->
     <LinearLayout
         android:id="@+id/error_layout"
         android:layout_width="wrap_content"
@@ -52,36 +81,28 @@
             android:textColor="@android:color/white"
             android:textSize="16sp" />
 
-        <Button
-            android:id="@+id/retry_button"
-            style="@style/SettingsButton"
+        <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="24dp"
-            android:text="Try Again" />
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/cancel_button"
+                style="@style/SettingsButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="12dp"
+                android:text="Cancel" />
+
+            <Button
+                android:id="@+id/retry_button"
+                style="@style/SettingsButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Try Again" />
+        </LinearLayout>
 
     </LinearLayout>
-
-    <ProgressBar
-        android:id="@+id/loading_indicator"
-        android:layout_width="64dp"
-        android:layout_height="64dp"
-        android:layout_centerInParent="true"
-        android:indeterminateTint="@color/settings_accent"
-        android:visibility="gone" />
-
-    <TextView
-        android:id="@+id/retry_status_text"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_below="@id/loading_indicator"
-        android:layout_centerHorizontal="true"
-        android:layout_marginTop="20dp"
-        android:background="#80000000"
-        android:paddingHorizontal="16dp"
-        android:paddingVertical="8dp"
-        android:textColor="@android:color/white"
-        android:textSize="16sp"
-        android:visibility="gone" />
 
 </RelativeLayout>

@@ -1,160 +1,76 @@
 # TV,
 ![TV, Logo](https://github.com/user-attachments/assets/5a2a2258-a355-49ad-8e8f-bc2579397a0e)
 
-**TV,** is an Android TV application built using the Leanback library, designed to display and play videos from a CSV file. The app allows users to specify a remote CSV file (e.g., a Google Sheets URL) or fall back to a local default CSV file (`default_csv.csv`). It supports various video stream formats and web content, with pointer-based control for an enhanced TV experience.
+**TV,** is a lightweight, robust Android TV application designed to turn any CSV-based link list (like Google Sheets) into a professional streaming interface. Built with the Leanback library and Media3 (ExoPlayer), it handles everything from standard video files to complex, dynamically-generated IPTV streams.
 
-## Video metadata sourced from
- - Published Google Sheets CSV (No hosting needed)  
- - Your own CSV
+## Key Features
 
-## Features
-
-- **Leanback UI**: A TV-friendly interface using Android's Leanback library, with rows of video groups and a settings option.
-- **Dynamic Video Source**: Load videos from a remote CSV file (e.g., a published Google Sheets URL) or a local default CSV file.
-  - **Guided CSV Setup**: Provides a dedicated setup screen for easily inputting CSV URLs or Google Sheets published CSV IDs, with clear instructions for obtaining the correct ID.
-  - **Intelligent Validation & Fallback**: Validates the provided CSV source. If the link is invalid or empty, the app automatically falls back to the default local CSV file, ensuring continuous operation.
-- **Enhanced Video Playback**:
-  - Supports multiple stream types including HLS (`.m3u8`), MP4 (`.mp4`), and RTMP (`rtmp://`).
-  - **Improved Stream Compatibility:** Handles HLS streams served from dynamic URLs (e.g., PHP scripts) by correctly identifying their content type and using the appropriate HLS media source.
-  - **Resolved Connection Issues:** Implements a workaround for SSL Handshake errors, allowing playback of streams from servers with untrusted or out-of-date certificates.
-  - **Robust Error Handling:** Features auto-retry for playback errors (up to 3 attempts) and provides clear user feedback before returning to the home screen if playback fails.
-  - **Optimized Buffering:** Configurable buffering settings (min 60s, max 120s) for a smoother streaming experience.
-- **Intelligent URL Handling**: Automatically distinguishes between video streams (including RTMP) and web pages, resolving URLs and inspecting content types to route content to the appropriate player or web view.
-- **Webpage Loading**: Directly load webpages specified in the CSV file, with improved interaction.
-  - **Stable Fullscreen Video:** Ensures smooth entry and exit from fullscreen video playback within the WebView.
-  - **Screensaver Prevention:** Keeps the device screen active during WebView playback.
-- **Settings Screen**: Allows users to specify a custom CSV URL or Google Sheets ID to load videos dynamically.
-- **Error Handling**: Gracefully handles invalid CSV URLs by falling back to the default CSV file, with user feedback via toast messages.
+- **Leanback UI**: A 10-foot user interface optimized for remote control navigation.
+- **Dynamic Source Management**:
+  - **Google Sheets Integration**: Use a simple spreadsheet as your backend. Publish to CSV and the app handles the rest.
+  - **Live Validation**: Intelligent link checking with automatic fallback to local `default_csv.csv`.
+- **Advanced Headless Extraction**:
+  - **Auto-Detection**: Automatically identifies video streams within regular web pages.
+  - **Dynamic Interception**: Uses a background headless engine to "click" play buttons and intercept hidden `.m3u8` or `.flv` links.
+  - **PHP Injector Support**: Specifically optimized to resolve streams from dynamic PHP scripts and IPTV injectors.
+- **Next-Gen Playback**:
+  - **Format Support**: HLS (M3U8), DASH (MPD), FLV, MP4, RTMP, and raw MPEG-TS.
+  - **Quality Control**: Manual quality selection (1080p, 720p, 480p) or "Auto" bitrate switching.
+  - **Deep Sniffing**: Content-based format detection (HLS/TS) that works even when file extensions are missing.
+  - **Bypassing Blocks**: Custom User-Agent rotation to prevent server-side blocking of the player.
+- **Robust Reliability**:
+  - **Smart Retry**: Automatic HLS fallback and connection retry mechanism.
+  - **Unified UI**: Centered, consistent loading and error states for a polished feel.
+  - **SSL Legacy Support**: Workarounds for SSL errors on older Android/FireOS devices.
 
 ## Screenshots
 ![tv](https://github.com/user-attachments/assets/56ccfd78-cef4-4b93-8a2f-e0064c0f3557)
 
-
-## Prerequisites
-
-- **Android Device**: An Android TV device or emulator running Android 5.0 (API 21) or higher. Tested on Amazon Fire 7 tablet (Fire OS 5.x).
-- **Android Studio**: Version 2023.1.1 or later.
-- **Internet Connection**: Required for fetching remote CSV files and streaming videos.
-
 ## Installation
 
-### 1. Clone the Repository
-Clone the project from GitHub:
+### Prerequisites
+- **Device**: Android TV or Android 5.0+ (Tested on FireOS and Android 14).
+- **Network**: Internet access required for remote CSV and streaming.
 
+### Build from Source
 ```bash  
-git clone https://github.com/<your-username>/android-csv-tv.gitcd android-csv-tv
+git clone https://github.com/mingminghome/android-csv-tv.git
+cd android-csv-tv
+./gradlew assembleDebug
 ```  
-
-### 2. Build and Run
-- Connect an Android TV device or start an emulator.
-- Build and run the app:
-```bash  
-  ./gradlew assembleDebug adb install -r app/build/outputs/apk/debug/app-debug.apk
-```  
-### Compiled Version
-A compiled version of the app is available for download at: [Release](https://github.com/mingminghome/android-csv-tv/releases/).
 
 ## Usage
 
-### 1. Prerequisites for Using Google Sheets
-- **Publish the Sheet**: In Google Sheets, go to **File > Share > Publish to web**.
-- **Choose CSV Format**: Select "Comma-separated values (.csv)" as the format.
-- **Get the Publish ID**: Copy the publish ID from the URL. The URL will look like `https://docs.google.com/spreadsheets/d/e/<publish-id>/pub?...`. The `<publish-id>` is the part between `/d/e/` and `/pub`.
+### 1. Preparing your Google Sheet
+1. Open your sheet and ensure columns are: `groupName`, `title`, `url`, `thumbnailUrl`.
+2. Go to **File > Share > Publish to web**.
+3. Select **Comma-separated values (.csv)** and click Publish.
+4. Copy the ID from the URL (the long string between `/d/e/` and `/pub`).
 
-### 2. For CSV URL
-- Directly input the CSV link (e.g., `https://example.com/videos.csv`) in the settings screen.
+### 2. Configure the App
+- Open **Settings** within the app.
+- Paste your **Google Sheet ID** or a direct **CSV URL**.
+- Select your preferred **Video Quality** (Auto is recommended for most users).
+- Click **Save and Continue**.
 
-### 3. Launch the App
-- On first launch, the app will load videos from the default CSV file (`res/raw/default_csv.csv`) if no custom sheet link is set.
-
-### 4. Configure a Custom Sheet Link
-- Navigate to the "Settings" row in the main screen.
-- Select the "Settings" item to open the `SetupActivity`.
-- Enter a Google Sheets publish ID (e.g., `1a2b3c4d5e6f7g8h9i0j`) or a direct CSV URL (e.g., `https://docs.google.com/spreadsheets/d/e/1a2b3c4d5e6f7g8h9i0j/pub?gid=0&single=true&output=csv`).
-- Click the "Save" button.
-- The app will validate the sheet link:
-    - If valid, you’ll see a toast: `Sheet loaded successfully with X videos.`
-- If invalid, you’ll see a toast: `Invalid sheet link: <error>. Using default CSV file.`
-
-### 5. Play Videos or Load Webpages
-- Browse the video groups on the main screen.
-- Select a video to play it in the `PlaybackFragment`, or load a webpage if the URL points to a web resource.
-- Use the pointer to control the video player (e.g., play, pause, seek).
-
-## CSV Format
-
-The CSV file (remote or local) must have the following columns in this order:
-- `groupName`: The group/category of the video (e.g., "Movies", "Live TV").
-- `title`: The title of the video or webpage.
-- `url`: The URL of the video stream (e.g., `.m3u8`, `.mp4`, `rtmp://`) or webpage (e.g., `https://example.com`).
-- `thumbnailUrl`: (Optional) URL of the video thumbnail.
-
-Example `default_csv.csv`:  
-
-    groupName,title,url,thumbnailUrl  
-    Video,Big Buck Bunny,https://bitdash-a.akamaihd.net/content/sintel/hls/playlist.m3u8,https://vz-48f70360-cc0.b-cdn.net/003223b9-e5e4-4047-8afd-7659d39924bd/thumbnail_8bbe7aa2.jpg  
-    Web,Big Buck Bunny@Wiki,https://en.wikipedia.org/wiki/Big_Buck_Bunny, 
-
-
+### 3. CSV Format Example
+| groupName | title | url | thumbnailUrl |
+| :--- | :--- | :--- | :--- |
+| News | Live News | `https://example.com/stream.m3u8` | `https://img.link/1.jpg` |
+| Web | Web Player | `https://streaming-site.com/player.php?id=123` | `https://img.link/2.jpg` |
 
 ## Project Structure
+- **`PlaybackFragment.kt`**: The core player engine using Media3.
+- **`Utils.kt`**: The extraction engine (Jsoup + Headless WebView + OkHttp Sniffing).
+- **`SetupActivity.kt`**: Configuration and quality settings.
+- **`MainFragment.kt`**: The Leanback catalog interface.
 
-- **`MainActivity.kt`**: The main entry point of the app, hosting the `MainFragment`.
-- **`MainFragment.kt`**: Displays the Leanback UI with video rows and a settings option.
-- **`SetupActivity.kt`**: Allows users to specify a custom CSV URL or Google Sheets ID.
-- **`PlaybackFragment.kt`**: Handles video playback using ExoPlayer.
-- **`Utils.kt`**: Utility functions for fetching and parsing CSV data.
-- **`res/raw/default_csv.csv`**: The default CSV file used when no valid sheet link is provided.
+## Support & Contributing
+Feel free to open an issue or submit a pull request for new features or bug fixes.
 
-## Known Issues
-
-- **SSL Certificate Errors on Older Devices**:
-    - Older devices (e.g., Fire 7 tablet running Fire OS 5.x) may encounter SSL errors (`Trust anchor for certification path not found`) when playing HTTPS streams due to an outdated certificate store.
-    - A temporary workaround is implemented in `PlaybackFragment.kt` to bypass SSL validation (not recommended for production).
-        - **Solution**: Test on a modern device (Android 9 or later), or host streams on a server with a certificate trusted by older devices.
-
-- **Network Dependency**:
-    - The app requires an internet connection to fetch remote CSV files and stream videos.
-
-## Contributing
-
-Contributions are welcome! To contribute:
-
-1. Fork the repository.
-2. Create a new branch:
-```bash
-  git checkout -b feature/your-feature-name
-```
-3. Make your changes and commit them:
-```bash
-  git commit -m "Add your feature description"
-```
-4. Push to your fork:
-```bash
-  git push origin feature/your-feature-name
-```
-5. Open a pull request on GitHub.
-
-Please ensure your code follows the project’s coding style and includes appropriate tests.
-
-## License
-
-This project is licensed under the GNU General Public License v3 (GPLv3). See the LICENSE file for details.
-
-## Support the Project
-
-If you find this app useful, consider supporting its development by buying me a coffee!
+If this project helps you, consider supporting its development:
 
 <a href="https://buymeacoffee.com/mingminghomework"><img src="https://img.buymeacoffee.com/button-api/?text=Buy me a coffee&emoji=&slug=mingminghomework&button_colour=FFDD00&font_colour=000000&font_family=Cookie&outline_colour=000000&coffee_colour=ffffff" alt="Buy Me a Coffee"></a>
 
-
-## Acknowledgments
-
-- [Android Leanback Library](https://developer.android.com/training/tv/start/layouts) for the TV-friendly UI.
-- [ExoPlayer (Media3)](https://github.com/androidx/media) for video playback.
-- [OpenCSV](https://opencsv.sourceforge.net/) for CSV parsing.
-- [OkHttp](https://square.github.io/okhttp/) for HTTP requests.
-
-## Contact
-
-For questions or feedback, please open an issue on GitHub.
+## License
+Licensed under the GNU General Public License v3 (GPLv3).
