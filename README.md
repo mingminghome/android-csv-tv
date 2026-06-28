@@ -143,9 +143,9 @@ This project is licensed under the GNU General Public License v3 (GPLv3). See th
 
 ## Support the Project
 
-If you find this app useful, consider supporting its development by buying me a coffee!
+If you find this app useful, consider supporting its development by buying me a pint!
 
-<a href="https://buymeacoffee.com/mingminghomework"><img src="https://img.buymeacoffee.com/button-api/?text=Buy me a coffee&emoji=&slug=mingminghomework&button_colour=FFDD00&font_colour=000000&font_family=Cookie&outline_colour=000000&coffee_colour=ffffff" alt="Buy Me a Coffee"></a>
+<a href="https://buymeacoffee.com/mingminghomework"><img src="https://img.buymeacoffee.com/button-api/?text=Buy me a pint&emoji=🍺&slug=mingminghomework&button_colour=5F7FFF&font_colour=ffffff&font_family=Cookie&outline_colour=000000&coffee_colour=FFDD00" alt="Buy me a pint"></a>
 
 
 ## Acknowledgments
