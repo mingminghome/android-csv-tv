@@ -9,22 +9,31 @@
 
 ## Features
 
-- **Leanback UI**: A TV-friendly interface using Android's Leanback library, with rows of video groups and a settings option.
-- **Dynamic Video Source**: Load videos from a remote CSV file (e.g., a published Google Sheets URL) or a local default CSV file.
-  - **Guided CSV Setup**: Provides a dedicated setup screen for easily inputting CSV URLs or Google Sheets published CSV IDs, with clear instructions for obtaining the correct ID.
-  - **Intelligent Validation & Fallback**: Validates the provided CSV source. If the link is invalid or empty, the app automatically falls back to the default local CSV file, ensuring continuous operation.
-- **Enhanced Video Playback**:
-  - Supports multiple stream types including HLS (`.m3u8`), MP4 (`.mp4`), and RTMP (`rtmp://`).
-  - **Improved Stream Compatibility:** Handles HLS streams served from dynamic URLs (e.g., PHP scripts) by correctly identifying their content type and using the appropriate HLS media source.
-  - **Resolved Connection Issues:** Implements a workaround for SSL Handshake errors, allowing playback of streams from servers with untrusted or out-of-date certificates.
-  - **Robust Error Handling:** Features auto-retry for playback errors (up to 3 attempts) and provides clear user feedback before returning to the home screen if playback fails.
-  - **Optimized Buffering:** Configurable buffering settings (min 60s, max 120s) for a smoother streaming experience.
-- **Intelligent URL Handling**: Automatically distinguishes between video streams (including RTMP) and web pages, resolving URLs and inspecting content types to route content to the appropriate player or web view.
-- **Webpage Loading**: Directly load webpages specified in the CSV file, with improved interaction.
-  - **Stable Fullscreen Video:** Ensures smooth entry and exit from fullscreen video playback within the WebView.
-  - **Screensaver Prevention:** Keeps the device screen active during WebView playback.
-- **Settings Screen**: Allows users to specify a custom CSV URL or Google Sheets ID to load videos dynamically.
-- **Error Handling**: Gracefully handles invalid CSV URLs by falling back to the default CSV file, with user feedback via toast messages.
+### 📺 Leanback & Custom UI
+- **Leanback Grid Layout**: TV-optimized interface utilizing Android's Leanback framework to display channel groups and card lists.
+- **Adaptive Scrolling Badge Ticker**: Card metadata badges (Resolution, Format, Latency, Audio-Only, Sound Channels, Domain Source) are center-aligned if they fit, or smoothly auto-scrolled via a self-reversing ticker animation when focused.
+- **Domain Source & Audio Badges**: Shows the host domain name of the stream source and audio configuration (Stereo, 5.1, Mono), enriched with clean vector icons.
+- **Guided CSV Setup Screen**: Dedicated TV setup interface to input remote CSV spreadsheet URLs or Google Sheets IDs, featuring real-time verification and persistent storage.
+
+### ⚡ Smart Live Stream Detection & Pre-check
+- **Intelligent URL Resolver**: Automatically resolves shortened links (tinyurl, bit.ly, etc.) and redirect links.
+- **Real-Time Focused Card Refresh**: Hovering focus over a grid card automatically queries fresh network metrics (latency, format, status). Uses a **network back-off schedule** (10-second initial update, transitioning to 1-minute cycles) to prevent server overload.
+- **Thread-Safe Sniffing Buffer**: Optimizes GET sniff requests by reading a maximum of **8KB** from infinite live stream sockets and closing the connection immediately, preventing network thread locks.
+
+### 📼 Advanced Native Playback (ExoPlayer)
+- **Multi-Format Streaming**: Built-in support for HLS playlists (`.m3u8`), progressive MPEG-TS raw streams, MP4, and RTMP.
+- **Auto-Format Detection**: Uses `DefaultMediaSourceFactory` to automatically detect stream containers and extract progressive feeds (like raw `application/octet-stream` broadcasts) natively.
+- **Stalled Decoder & Black Screen Auto-Recovery**: Monitors rendering frames. If the decoder stalls on an active stream with no output for 6 seconds, the player automatically reloads the broadcast.
+- **Audio-Only Mode Visual Card**: Plays radio/audio-only feeds and shows a custom graphic visualizer card instead of a blank black screen.
+- **SSL Error Workaround**: Safely bypasses SSL handshake errors to support playback of streams with expired/self-signed certificates on older devices.
+- **Optimized Buffering**: Customizable buffering controls (min 60s, max 120s) for robust network streaming.
+
+### 🌐 Interactive WebView Web Engine
+- **TV Pointer Navigation**: Dedicated D-pad pointer control that automatically snaps to the nearest clickable element.
+- **WebView Action Toolbar**: Toggleable toolbar (Back, Forward, Reload, Home, Close) with navigation button snapping.
+- **Security Redirect Alert**: Prompts the user with a confirmation dialog before allowing external webpage redirects.
+- **Clean WebView Termination**: Automatically destroys web views, clears caches/cookies, and frees resources upon closing.
+- **Screensaver Prevention**: Keeps the display active during WebView video streams.
 
 ## Screenshots
 ![tv](https://github.com/user-attachments/assets/56ccfd78-cef4-4b93-8a2f-e0064c0f3557)
