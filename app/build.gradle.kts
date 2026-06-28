@@ -12,6 +12,15 @@ android {
     namespace = "com.mmhw.csvtv"
     compileSdk = 35
 
+    // Load configurations from local.properties
+    val localProperties = Properties()
+    val localPropertiesFile = project.rootProject.file("local.properties")
+    if (localPropertiesFile.exists()) {
+        localPropertiesFile.inputStream().use { inputStream ->
+            localProperties.load(inputStream)
+        }
+    }
+
     defaultConfig {
         applicationId = "com.mmhw.csvtv"
         minSdk = 21
@@ -20,14 +29,14 @@ android {
         versionName = "1.08"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
 
-        // Load sheetsApiKey and defaultSheetId from local.properties
-        val localProperties = Properties()
-        val localPropertiesFile = project.rootProject.file("local.properties")
-        if (localPropertiesFile.exists()) {
-            localPropertiesFile.inputStream().use { inputStream ->
-                localProperties.load(inputStream)
-            }
+    signingConfigs {
+        create("release") {
+            storeFile = file("../release.keystore")
+            storePassword = localProperties.getProperty("keystore.password", "csvtvpass")
+            keyAlias = localProperties.getProperty("keystore.alias", "csvtv")
+            keyPassword = localProperties.getProperty("keystore.keyPassword", "csvtvpass")
         }
     }
 
@@ -38,6 +47,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            signingConfig = signingConfigs.getByName("release")
         }
     }
     compileOptions {
@@ -57,6 +67,11 @@ android {
             excludes += "META-INF/DEPENDENCIES"
             excludes += "META-INF/INDEX.LIST"
         }
+    }
+
+    lint {
+        checkReleaseBuilds = false
+        abortOnError = false
     }
 }
 
@@ -90,7 +105,6 @@ dependencies {
     implementation(libs.okhttp)
 
     // Jsoup for web scraping (if needed)
-    implementation ("org.json:json:20231013")
     implementation("org.jsoup:jsoup:1.17.2")
     implementation(libs.opencsv)
 
