@@ -13,6 +13,7 @@ import androidx.leanback.widget.HeaderItem
 import androidx.leanback.widget.ListRow
 import androidx.leanback.widget.ListRowPresenter
 import androidx.leanback.widget.OnItemViewClickedListener
+import androidx.leanback.widget.OnItemViewSelectedListener
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -25,6 +26,24 @@ class MainFragment : BrowseSupportFragment() {
         override fun run() {
             updateDateTime()
             handler.postDelayed(this, 60_000)
+        }
+    }
+    private var focusedVideo: Video? = null
+    private val focusedVideoRefreshHandler = Handler(Looper.getMainLooper())
+    private var isFirstRefreshOfCurrentFocused = true
+    private val focusedVideoRefreshRunnable = object : Runnable {
+        override fun run() {
+            val video = focusedVideo
+            if (video != null) {
+                refreshFocusedVideoMetadata(video)
+                val nextDelay = if (isFirstRefreshOfCurrentFocused) {
+                    isFirstRefreshOfCurrentFocused = false
+                    60_000L
+                } else {
+                    60_000L
+                }
+                focusedVideoRefreshHandler.postDelayed(this, nextDelay)
+            }
         }
     }
 
@@ -49,6 +68,19 @@ class MainFragment : BrowseSupportFragment() {
             }
             false
         })
+
+        setOnItemViewSelectedListener(OnItemViewSelectedListener { _, item, _, _ ->
+            focusedVideoRefreshHandler.removeCallbacks(focusedVideoRefreshRunnable)
+            val video = item as? Video
+            val urlLower = video?.url?.trim()?.lowercase() ?: ""
+            if (video != null && urlLower != "settings" && urlLower != "refresh") {
+                focusedVideo = video
+                isFirstRefreshOfCurrentFocused = true
+                focusedVideoRefreshHandler.postDelayed(focusedVideoRefreshRunnable, 10_000L)
+            } else {
+                focusedVideo = null
+            }
+        })
     }
 
     private fun handleVideoClick(video: Video) {
@@ -63,29 +95,29 @@ class MainFragment : BrowseSupportFragment() {
                 return
             }
             url.equals("settings", ignoreCase = true) || title.equals("Settings", ignoreCase = true) -> {
-                // *** CHANGE: Ensure everything stops when going to Settings ***
-
-                // 1. Pop all fragments from the back stack to destroy any open WebView or PlaybackFragment.
+                // Pop all fragments from the back stack to destroy any open WebView or PlaybackFragment.
                 parentFragmentManager.popBackStack(null, FragmentManager.POP_BACK_STACK_INCLUSIVE)
 
-                // 2. Start the Setup activity.
+                // Start the Setup activity.
                 val intent = Intent(requireContext(), SetupActivity::class.java)
                 startActivity(intent)
 
-                // 3. Finish the current MainActivity to ensure a clean start after setup is complete.
+                // Finish the current MainActivity to ensure a clean start after setup is complete.
                 requireActivity().finish()
                 return
             }
             url.startsWith("rtmp://") -> {
                 Log.d("MainFragment", "Opening PlaybackFragment directly for RTMP URL: $url")
+                Utils.incrementWatchCount(requireContext(), url)
                 openPlaybackFragment(url)
                 return
             }
             else -> {
                 Toast.makeText(requireContext(), "Resolving URL...", Toast.LENGTH_SHORT).show()
 
-                Utils.resolveUrl(url) { resolvedUrl, contentType, error ->
+                Utils.resolveUrl(url, requireContext()) { resolvedUrl, contentType, format, resolution, error, isAudioOnly, audioChannels ->
                     if (!resolvedUrl.isNullOrBlank()) {
+                        Utils.incrementWatchCount(requireContext(), url)
                         Log.d("MainFragment", "Resolved URL: $url -> $resolvedUrl, Content-Type: $contentType, isVideoStream=${Utils.isVideoStream(resolvedUrl, contentType)}")
                         if (Utils.isVideoStream(resolvedUrl, contentType)) {
                             Log.d("MainFragment", "Opening PlaybackFragment for resolved URL: $resolvedUrl")
@@ -166,7 +198,115 @@ class MainFragment : BrowseSupportFragment() {
             showSettingsAndRefreshOnly()
         } else {
             this.videos = videos
+            context?.let { ctx ->
+                for (video in videos) {
+                    val cached = Utils.getPersistentResolvedMetadata(ctx, video.url)
+                    if (cached != null) {
+                        video.isValid = true
+                        video.videoFormat = cached.format
+                        video.resolution = cached.resolution
+                        video.isAudioOnly = cached.isAudioOnly
+                        video.audioChannels = cached.audioChannels
+                    }
+                }
+            }
             updateRows()
+            startVideoPrecheck()
+        }
+    }
+
+    private fun startVideoPrecheck() {
+        if (!isAdded || isDetached) return
+        
+        // Gather all unique videos (by url) to check, excluding refresh/settings
+        val uniqueVideos = videos.filter {
+            val urlLower = it.url.trim().lowercase()
+            urlLower != "settings" && urlLower != "refresh"
+        }.distinctBy { it.url }
+
+        // Sort by watch count descending
+        val checkQueue = uniqueVideos.sortedByDescending {
+            Utils.getWatchCount(requireContext(), it.url)
+        }.toMutableList()
+
+        checkNextVideo(checkQueue)
+    }
+
+    private fun checkNextVideo(queue: MutableList<Video>) {
+        if (queue.isEmpty() || !isAdded || isDetached) return
+
+        val video = queue.removeAt(0)
+        video.isChecking = true
+        updateVideoCard(video)
+
+        val startTime = System.currentTimeMillis()
+        val context = context ?: return
+
+        Utils.resolveUrl(video.url, context) { resolvedUrl, contentType, format, resolution, error, isAudioOnly, audioChannels ->
+            val ping = System.currentTimeMillis() - startTime
+            
+            activity?.runOnUiThread {
+                if (!isAdded || isDetached) return@runOnUiThread
+                
+                video.isChecking = false
+                video.pingMs = ping
+                
+                if (resolvedUrl != null && error == null) {
+                    video.isValid = true
+                    video.videoFormat = format
+                    video.resolution = resolution
+                    video.isAudioOnly = isAudioOnly
+                    video.audioChannels = audioChannels
+                } else {
+                    video.isValid = false
+                }
+                
+                updateVideoCard(video)
+                
+                // Proceed to next video after a 500ms delay to keep network light
+                handler.postDelayed({
+                    checkNextVideo(queue)
+                }, 500)
+            }
+        }
+    }
+
+    private fun updateVideoCard(video: Video) {
+        for (i in 0 until rowsAdapter.size()) {
+            val row = rowsAdapter.get(i) as? ListRow ?: continue
+            val rowAdapter = row.adapter as? ArrayObjectAdapter ?: continue
+            for (j in 0 until rowAdapter.size()) {
+                val item = rowAdapter.get(j) as? Video ?: continue
+                if (item.url == video.url) {
+                    rowAdapter.replace(j, video)
+                }
+            }
+        }
+    }
+
+    private fun refreshFocusedVideoMetadata(video: Video) {
+        if (!isAdded || isDetached) return
+        val startTime = System.currentTimeMillis()
+        val context = context ?: return
+
+        Utils.resolveUrl(video.url, context, bypassCache = true) { resolvedUrl, contentType, format, resolution, error, isAudioOnly, audioChannels ->
+            val ping = System.currentTimeMillis() - startTime
+            activity?.runOnUiThread {
+                if (!isAdded || isDetached) return@runOnUiThread
+                if (focusedVideo?.url == video.url) {
+                    video.pingMs = ping
+                    if (resolvedUrl != null && error == null) {
+                        video.isValid = true
+                        video.videoFormat = format
+                        video.resolution = resolution
+                        video.isAudioOnly = isAudioOnly
+                        video.audioChannels = audioChannels
+                    } else {
+                        video.isValid = false
+                    }
+                    updateVideoCard(video)
+                }
+            }
         }
     }
 
@@ -211,5 +351,6 @@ class MainFragment : BrowseSupportFragment() {
     override fun onDestroy() {
         super.onDestroy()
         handler.removeCallbacks(updateTimeRunnable)
+        focusedVideoRefreshHandler.removeCallbacksAndMessages(null)
     }
 }

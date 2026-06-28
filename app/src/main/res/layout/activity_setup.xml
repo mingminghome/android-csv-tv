@@ -1,85 +1,202 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:gravity="center"
-    android:orientation="vertical"
-    android:padding="16dp">
-
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginBottom="16dp"
-        android:text="CSV Source"
-        android:textSize="34sp" />
-
-    <EditText
-        android:id="@+id/sheet_link_input"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginBottom="16dp"
-        android:hint="Enter CSV URL / Google sheet CSV ID"
-        android:inputType="textUri" />
-
-    <TextView
-        android:id="@+id/textView"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginBottom="16dp"
-        android:text="When using Google Sheets as a CSV source, please provide the published CSV ID, not the Sheet ID. To obtain the published CSV ID, publish your sheet as a CSV file and use the ID from the resulting URL." />
-
-    <TextView
-        android:id="@+id/textView2"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginBottom="16dp"
-        android:text="I know it's a bit long ..." />
+    android:fillViewport="true"
+    android:background="#121212">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="16dp"
-        android:gravity="start"
-        android:orientation="horizontal">
+        android:gravity="center"
+        android:orientation="vertical"
+        android:padding="24dp">
 
-        <Button
-            android:id="@+id/insert_path_button"
+        <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Insert Path" />
+            android:layout_marginBottom="16dp"
+            android:text="CSV Source Configuration"
+            android:textColor="@android:color/white"
+            android:textSize="28sp"
+            android:textStyle="bold" />
 
-        <Button
-            android:id="@+id/select_csv_button"
-            android:layout_width="wrap_content"
+        <EditText
+            android:id="@+id/sheet_link_input"
+            android:layout_width="540dp"
+            android:layout_height="48dp"
+            android:layout_marginBottom="8dp"
+            android:background="@drawable/edit_text_bg"
+            android:hint="Enter CSV URL / Google sheet, Bitly, TinyURL ID"
+            android:textColorHint="#66FFFFFF"
+            android:textColor="@android:color/white"
+            android:inputType="textUri"
+            android:paddingHorizontal="16dp"
+            android:textSize="16sp" />
+
+        <TextView
+            android:id="@+id/textView"
+            android:layout_width="540dp"
             android:layout_height="wrap_content"
-            android:text="Select CSV" />
-        <Button
-            android:id="@+id/paste_button"
-            android:layout_width="wrap_content"
+            android:layout_marginBottom="8dp"
+            android:textColor="#A0FFFFFF"
+            android:textSize="14sp"
+            android:text="Supports full URLs (including shortlinks like Bitly / TinyURL), raw Google Sheets published CSV IDs, or shortlink IDs (auto-detected)." />
+
+        <TextView
+            android:id="@+id/textView2"
+            android:layout_width="540dp"
             android:layout_height="wrap_content"
-            android:text="Paste" />
+            android:layout_marginBottom="24dp"
+            android:textColor="#70FFFFFF"
+            android:textSize="12sp"
+            android:text="Input validation will run in the background. Press 'Save and Continue' to verify." />
+
+        <!-- Vertical Sized Pane for Options -->
+        <LinearLayout
+            android:layout_width="380dp"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:gravity="center_horizontal">
+
+            <!-- Category 1: Source & Input Options -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="8dp"
+                android:text="Source &amp; Input Options"
+                android:textColor="#00E5FF"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:gravity="start" />
+
+            <Button
+                android:id="@+id/paste_button"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginBottom="8dp"
+                android:background="@drawable/button_focus_bg"
+                android:textColor="@color/button_text_color"
+                android:text="Paste Clipboard"
+                android:textAllCaps="false"
+                android:drawableStart="@drawable/ic_paste"
+                android:drawablePadding="12dp"
+                android:paddingStart="16dp"
+                android:gravity="center_vertical|start" />
+
+            <Button
+                android:id="@+id/select_csv_button"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginBottom="8dp"
+                android:background="@drawable/button_focus_bg"
+                android:textColor="@color/button_text_color"
+                android:text="Select CSV File"
+                android:textAllCaps="false"
+                android:drawableStart="@drawable/ic_folder"
+                android:drawablePadding="12dp"
+                android:paddingStart="16dp"
+                android:gravity="center_vertical|start" />
+
+            <Button
+                android:id="@+id/insert_path_button"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginBottom="8dp"
+                android:background="@drawable/button_focus_bg"
+                android:textColor="@color/button_text_color"
+                android:text="Use Default CSV"
+                android:textAllCaps="false"
+                android:drawableStart="@drawable/ic_restore"
+                android:drawablePadding="12dp"
+                android:paddingStart="16dp"
+                android:gravity="center_vertical|start" />
+
+            <Button
+                android:id="@+id/history_button"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginBottom="24dp"
+                android:background="@drawable/button_focus_bg"
+                android:textColor="@color/button_text_color"
+                android:text="Recent Sources"
+                android:textAllCaps="false"
+                android:drawableStart="@drawable/ic_history"
+                android:drawablePadding="12dp"
+                android:paddingStart="16dp"
+                android:gravity="center_vertical|start" />
+
+            <!-- Category 2: System Utilities -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="8dp"
+                android:text="System Utilities"
+                android:textColor="#00E5FF"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:gravity="start" />
+
+            <Button
+                android:id="@+id/purge_freq_button"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginBottom="24dp"
+                android:background="@drawable/button_focus_bg"
+                android:textColor="@color/button_text_color"
+                android:text="Reset Watch History"
+                android:textAllCaps="false"
+                android:drawableStart="@drawable/ic_reset"
+                android:drawablePadding="12dp"
+                android:paddingStart="16dp"
+                android:gravity="center_vertical|start" />
+
+            <!-- Actions Separation Line -->
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="#22FFFFFF"
+                android:layout_marginBottom="16dp"/>
+
+            <!-- Action Buttons Side-by-Side -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="end">
+
+                <Button
+                    android:id="@+id/cancel_button"
+                    android:layout_width="0dp"
+                    android:layout_height="48dp"
+                    android:layout_weight="1"
+                    android:layout_marginEnd="8dp"
+                    android:background="@drawable/button_focus_bg"
+                    android:textColor="@color/button_text_color"
+                    android:text="Cancel"
+                    android:textAllCaps="false"
+                    android:drawableStart="@drawable/ic_close"
+                    android:drawablePadding="12dp"
+                    android:paddingStart="16dp"
+                    android:gravity="center_vertical|start"
+                    android:visibility="gone" />
+
+                <Button
+                    android:id="@+id/save_button"
+                    android:layout_width="0dp"
+                    android:layout_height="48dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/button_focus_bg"
+                    android:textColor="@color/button_text_color"
+                    android:text="Save"
+                    android:textAllCaps="false"
+                    android:drawableStart="@drawable/ic_save"
+                    android:drawablePadding="12dp"
+                    android:paddingStart="16dp"
+                    android:gravity="center_vertical|start" />
+            </LinearLayout>
+
+        </LinearLayout>
+
     </LinearLayout>
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="16dp"
-        android:gravity="end"
-        android:orientation="horizontal">
-
-        <Button
-            android:id="@+id/cancel_button"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Cancel"
-            android:visibility="gone" />
-
-        <Button
-            android:id="@+id/save_button"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Save and Continue" />
-
-    </LinearLayout>
-
-</LinearLayout>
+</ScrollView>

@@ -36,6 +36,7 @@ class PlaybackFragment : Fragment() {
     private var loadingIndicator: ProgressBar? = null
     private var playerView: PlayerView? = null
     private var errorText: TextView? = null
+    private var audioOnlyOverlay: View? = null
     private var playbackPosition: Long = 0
     private var currentMediaItem: MediaItem? = null
     private var currentSurface: Any? = null
@@ -60,6 +61,19 @@ class PlaybackFragment : Fragment() {
         restartPlayer()
     }
 
+    private var isFirstFrameRendered = false
+    private val BLACK_SCREEN_TIMEOUT_MS = 6000L // 6 seconds
+    private val blackScreenTimeoutRunnable = Runnable {
+        val hasVideoTrack = player?.videoFormat != null
+        if (hasVideoTrack && !isFirstFrameRendered && player?.playWhenReady == true) {
+            Log.w("PlaybackFragment", "Black screen detected (STATE_READY but no first frame rendered). Restarting player.")
+            context?.let {
+                Toast.makeText(it, "Stalled video frame detected. Reloading stream...", Toast.LENGTH_SHORT).show()
+            }
+            restartPlayer()
+        }
+    }
+
     override fun onCreateView(
         inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
     ): View? {
@@ -73,6 +87,7 @@ class PlaybackFragment : Fragment() {
         playerView = view.findViewById<PlayerView>(R.id.player_view)
         errorText = view.findViewById<TextView>(R.id.error_text)
         loadingIndicator = view.findViewById<ProgressBar>(R.id.loading_indicator)
+        audioOnlyOverlay = view.findViewById<View>(R.id.audio_only_overlay)
 
         (loadingIndicator?.layoutParams as? RelativeLayout.LayoutParams)?.apply {
             addRule(RelativeLayout.CENTER_IN_PARENT, RelativeLayout.TRUE)
@@ -106,6 +121,7 @@ class PlaybackFragment : Fragment() {
         }
         currentSurface = newSurface
 
+        isFirstFrameRendered = false
         if (retryCount == 0) {
             retryCount = 0
         }
@@ -144,9 +160,7 @@ class PlaybackFragment : Fragment() {
                     val rtmpDataSourceFactory = RtmpDataSource.Factory()
                     DefaultMediaSourceFactory(rtmpDataSourceFactory).createMediaSource(mediaItem)
                 } else {
-                    HlsMediaSource.Factory(httpDataSourceFactory)
-                        .setAllowChunklessPreparation(true)
-                        .createMediaSource(mediaItem)
+                    DefaultMediaSourceFactory(httpDataSourceFactory).createMediaSource(mediaItem)
                 }
 
                 setMediaSource(mediaSource)
@@ -157,11 +171,13 @@ class PlaybackFragment : Fragment() {
                 addListener(object : Player.Listener {
                     override fun onPlaybackStateChanged(playbackState: Int) {
                         handler.removeCallbacks(bufferingTimeoutRunnable) // Always remove callback first
+                        handler.removeCallbacks(blackScreenTimeoutRunnable)
                         when (playbackState) {
                             Player.STATE_BUFFERING -> {
                                 loadingIndicator?.visibility = View.VISIBLE
                                 playerView?.visibility = View.GONE
                                 errorText?.visibility = View.GONE
+                                audioOnlyOverlay?.visibility = View.GONE
                                 playerView?.useController = false
                                 playerView?.hideController()
                                 Log.d("PlaybackFragment", "Playback state changed: BUFFERING")
@@ -172,21 +188,47 @@ class PlaybackFragment : Fragment() {
                                     loadingIndicator?.visibility = View.GONE
                                     loadingIndicator?.alpha = 1f
                                 }?.start()
+
+                                val isAudio = player?.videoFormat == null
+                                audioOnlyOverlay?.visibility = if (isAudio) View.VISIBLE else View.GONE
+
                                 playerView?.alpha = 0f
-                                playerView?.visibility = View.VISIBLE
-                                playerView?.animate()?.alpha(1f)?.setDuration(200)?.start()
+                                playerView?.visibility = if (isAudio) View.GONE else View.VISIBLE
+                                if (!isAudio) {
+                                    playerView?.animate()?.alpha(1f)?.setDuration(200)?.start()
+                                }
+
                                 playerView?.useController = true
                                 playWhenReady = true
                                 Log.d("PlaybackFragment", "Playback state changed: READY")
+                                if (!isFirstFrameRendered) {
+                                    handler.postDelayed(blackScreenTimeoutRunnable, BLACK_SCREEN_TIMEOUT_MS)
+                                }
+
+                                val channelCount = player?.audioFormat?.channelCount
+                                val audioChannels = when (channelCount) {
+                                    1 -> "Mono"
+                                    2 -> "Stereo"
+                                    6 -> "5.1"
+                                    else -> if (channelCount != null && channelCount > 0) "${channelCount}ch" else null
+                                }
+
+                                resolvedUrl?.let { url ->
+                                    context?.let { ctx ->
+                                        Utils.saveAudioMetadata(ctx, url, isAudio, audioChannels)
+                                    }
+                                }
                             }
                             Player.STATE_ENDED -> {
                                 loadingIndicator?.visibility = View.GONE
+                                audioOnlyOverlay?.visibility = View.GONE
                                 playerView?.visibility = View.VISIBLE
                                 playerView?.useController = true
                                 Log.d("PlaybackFragment", "Playback state changed: ENDED")
                             }
                             Player.STATE_IDLE -> {
                                 loadingIndicator?.visibility = View.GONE
+                                audioOnlyOverlay?.visibility = View.GONE
                                 playerView?.visibility = View.GONE
                                 playerView?.useController = true
                                 Log.d("PlaybackFragment", "Playback state changed: IDLE")
@@ -209,9 +251,7 @@ class PlaybackFragment : Fragment() {
                                             val rtmpDataSourceFactory = RtmpDataSource.Factory()
                                             DefaultMediaSourceFactory(rtmpDataSourceFactory).createMediaSource(mediaItemToRetry)
                                         } else {
-                                            HlsMediaSource.Factory(httpDataSourceFactory)
-                                                .setAllowChunklessPreparation(true)
-                                                .createMediaSource(mediaItemToRetry)
+                                            DefaultMediaSourceFactory(httpDataSourceFactory).createMediaSource(mediaItemToRetry)
                                         }
                                         player?.setMediaSource(mediaSource)
                                         player?.prepare()
@@ -232,6 +272,8 @@ class PlaybackFragment : Fragment() {
                     }
 
                     override fun onRenderedFirstFrame() {
+                        isFirstFrameRendered = true
+                        handler.removeCallbacks(blackScreenTimeoutRunnable)
                         playbackPosition = player?.currentPosition ?: 0
                         Log.d("PlaybackFragment", "First frame rendered at position: $playbackPosition")
                     }
@@ -271,10 +313,14 @@ class PlaybackFragment : Fragment() {
 
     override fun onStop() {
         super.onStop()
-        player?.let {
-            playbackPosition = it.currentPosition
-            it.playWhenReady = false
-            Log.d("PlaybackFragment", "onStop: Pausing playback, saving position: $playbackPosition")
+        Log.d("PlaybackFragment", "onStop: Auto-disconnecting media player.")
+        player?.release()
+        player = null
+        
+        handler.post {
+            if (isAdded && !parentFragmentManager.isStateSaved) {
+                parentFragmentManager.popBackStack()
+            }
         }
     }
 

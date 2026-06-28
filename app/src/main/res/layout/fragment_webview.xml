@@ -4,11 +4,89 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:focusable="true"
-    android:focusableInTouchMode="true">
+    android:focusableInTouchMode="true"
+    android:background="#121212">
 
+    <!-- WebView Content (Full Screen) -->
     <WebView
         android:id="@+id/web_view"
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
+
+    <!-- WebView Navigation Toolbar (Overlay) -->
+    <LinearLayout
+        android:id="@+id/web_toolbar"
+        android:layout_width="match_parent"
+        android:layout_height="56dp"
+        android:background="#E61F1F1F"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingHorizontal="16dp"
+        android:translationY="-56dp"
+        android:visibility="gone">
+
+        <ImageButton
+            android:id="@+id/btn_web_back"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginEnd="16dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:src="@drawable/ic_arrow_back"
+            android:contentDescription="Go Back"
+            android:focusable="true" />
+
+        <ImageButton
+            android:id="@+id/btn_web_forward"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginEnd="16dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:src="@drawable/ic_arrow_forward"
+            android:contentDescription="Go Forward"
+            android:focusable="true" />
+
+        <ImageButton
+            android:id="@+id/btn_web_refresh"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginEnd="16dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:src="@drawable/ic_refresh_icon"
+            android:contentDescription="Refresh/Stop"
+            android:focusable="true" />
+
+        <ImageButton
+            android:id="@+id/btn_web_auto_fullscreen"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginEnd="16dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:src="@drawable/ic_auto_fullscreen"
+            android:contentDescription="Auto Fullscreen Media"
+            android:focusable="true" />
+
+        <ImageButton
+            android:id="@+id/btn_web_desktop_toggle"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:src="@drawable/ic_desktop"
+            android:contentDescription="Toggle Desktop View"
+            android:focusable="true" />
+
+        <View
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1" />
+
+        <ImageButton
+            android:id="@+id/btn_web_close"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:src="@drawable/ic_close"
+            android:contentDescription="Close WebView"
+            android:focusable="true" />
+    </LinearLayout>
 
 </FrameLayout>
