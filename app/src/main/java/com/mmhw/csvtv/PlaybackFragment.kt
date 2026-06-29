@@ -47,10 +47,10 @@ class PlaybackFragment : Fragment() {
     private val retryDelayMs = 3000L
     private val handler = Handler(Looper.getMainLooper())
 
-    private val minBufferMs = 60000
-    private val maxBufferMs = 120000
-    private val bufferForPlaybackMs = 5000
-    private val bufferForPlaybackAfterRebufferMs = 10000
+    private val minBufferMs = 15000
+    private val maxBufferMs = 30000
+    private val bufferForPlaybackMs = 1500
+    private val bufferForPlaybackAfterRebufferMs = 3000
 
     private val BUFFERING_TIMEOUT_MS = 10000L // 10 seconds
     private val bufferingTimeoutRunnable = Runnable {
@@ -138,10 +138,11 @@ class PlaybackFragment : Fragment() {
             .build()
 
         val okHttpClient = OkHttpClient.Builder()
+            .connectionPool(okhttp3.ConnectionPool(10, 5, TimeUnit.MINUTES))
             .sslSocketFactory(createUnsafeSslContext().socketFactory, createUnsafeTrustManager())
             .hostnameVerifier { _, _ -> true }
-            .connectTimeout(10, TimeUnit.SECONDS)
-            .readTimeout(10, TimeUnit.SECONDS)
+            .connectTimeout(8, TimeUnit.SECONDS)
+            .readTimeout(8, TimeUnit.SECONDS)
             .build()
 
         val httpDataSourceFactory = OkHttpDataSource.Factory(okHttpClient)
@@ -150,8 +151,22 @@ class PlaybackFragment : Fragment() {
         player = ExoPlayer.Builder(requireContext())
             .setLoadControl(loadControl)
             .build().apply {
+                val mimeType = arguments?.getString("mime_type")
+                val format = Utils.determineVideoFormat(urlToPlay, mimeType)
                 val mediaItem = MediaItem.Builder()
                     .setUri(urlToPlay)
+                    .apply {
+                        if (format == "M3U8") {
+                            setMimeType("application/x-mpegURL")
+                        } else if (!mimeType.isNullOrEmpty()) {
+                            setMimeType(mimeType)
+                        }
+                    }
+                    .setLiveConfiguration(
+                        MediaItem.LiveConfiguration.Builder()
+                            .setTargetOffsetMs(3000)
+                            .build()
+                    )
                     .setMediaMetadata(MediaMetadata.Builder().setTitle("Video Stream").build())
                     .build()
                 this@PlaybackFragment.currentMediaItem = mediaItem
@@ -317,8 +332,11 @@ class PlaybackFragment : Fragment() {
         player?.release()
         player = null
         
+        handler.removeCallbacks(bufferingTimeoutRunnable)
+        handler.removeCallbacks(blackScreenTimeoutRunnable)
+        
         handler.post {
-            if (isAdded && !parentFragmentManager.isStateSaved) {
+            if (isAdded && !isRemoving && !parentFragmentManager.isStateSaved && activity?.isFinishing == false) {
                 parentFragmentManager.popBackStack()
             }
         }

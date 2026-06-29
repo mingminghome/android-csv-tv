@@ -263,8 +263,16 @@ object Utils {
         bypassCache: Boolean = false,
         callback: (String?, String?, String?, String?, String?, Boolean?, String?) -> Unit
     ) {
-        if (url.isBlank()) {
+        val trimmedUrl = url.trim()
+        if (trimmedUrl.isBlank()) {
             callback(null, null, null, null, "URL is empty", null, null)
+            return
+        }
+
+        val lowerUrl = trimmedUrl.lowercase()
+        if (!lowerUrl.startsWith("http://") && !lowerUrl.startsWith("https://")) {
+            val format = determineVideoFormat(trimmedUrl, null)
+            callback(trimmedUrl, null, format, null, null, false, null)
             return
         }
 
@@ -318,7 +326,7 @@ object Utils {
                 val isAudio = contentType?.startsWith("audio/", ignoreCase = true) == true
 
                 // If Content-Type is available and indicates a stream from HEAD request, complete resolution.
-                if (contentType != null && isVideoStream(resolvedUrl, contentType)) {
+                if (response.isSuccessful && contentType != null && isVideoStream(resolvedUrl, contentType)) {
                     val meta = ResolvedMetadata(resolvedUrl, contentType, format, null, null, isAudio, null)
                     urlCache[url] = meta
                     if (context != null && isShortUrl(url)) {

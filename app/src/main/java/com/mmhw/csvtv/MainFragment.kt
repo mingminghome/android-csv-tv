@@ -120,8 +120,8 @@ class MainFragment : BrowseSupportFragment() {
                         Utils.incrementWatchCount(requireContext(), url)
                         Log.d("MainFragment", "Resolved URL: $url -> $resolvedUrl, Content-Type: $contentType, isVideoStream=${Utils.isVideoStream(resolvedUrl, contentType)}")
                         if (Utils.isVideoStream(resolvedUrl, contentType)) {
-                            Log.d("MainFragment", "Opening PlaybackFragment for resolved URL: $resolvedUrl")
-                            openPlaybackFragment(resolvedUrl)
+                            Log.d("MainFragment", "Opening PlaybackFragment for resolved URL: $resolvedUrl, Content-Type: $contentType")
+                            openPlaybackFragment(resolvedUrl, contentType)
                         } else {
                             Log.d("MainFragment", "Opening WebViewFragment for resolved URL: $resolvedUrl")
                             openWebViewFragment(resolvedUrl)
@@ -143,10 +143,11 @@ class MainFragment : BrowseSupportFragment() {
         }
     }
 
-    private fun openPlaybackFragment(url: String) {
+    private fun openPlaybackFragment(url: String, mimeType: String? = null) {
         val fragment = PlaybackFragment().apply {
             arguments = Bundle().apply {
                 putString("video_url", url)
+                putString("mime_type", mimeType)
             }
         }
         parentFragmentManager.beginTransaction()
