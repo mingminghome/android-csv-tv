@@ -1,0 +1,151 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.cardview.widget.CardView
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:card_view="http://schemas.android.com/apk/res-auto"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    card_view:cardCornerRadius="8dp"
+    card_view:cardElevation="4dp"
+    card_view:cardUseCompatPadding="true">
+
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+        <!-- Thumbnail Image -->
+
+        <!-- Title (hidden by default, shown on focus) -->
+        <ImageView
+            android:id="@+id/thumbnail_image"
+            android:layout_width="224dp"
+            android:layout_height="126dp"/>
+
+        <TextView
+            android:id="@+id/title_text"
+            android:layout_width="224dp"
+            android:layout_height="wrap_content"
+            android:visibility="gone"
+            android:padding="4dp"
+            android:textSize="14sp"
+            android:textColor="@android:color/white"
+            android:maxLines="1"
+            android:ellipsize="end"
+            android:background="#80000000"
+            android:textAlignment="center" />
+
+        <HorizontalScrollView
+            android:id="@+id/info_layout"
+            android:layout_width="224dp"
+            android:layout_height="wrap_content"
+            android:scrollbars="none"
+            android:background="#A0000000"
+            android:fillViewport="true"
+            android:visibility="gone">
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:padding="4dp"
+                android:gravity="center">
+
+                <TextView
+                    android:id="@+id/source_badge"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="6dp"
+                    android:paddingLeft="4dp"
+                    android:paddingRight="4dp"
+                    android:background="@drawable/badge_bg"
+                    android:textColor="@android:color/white"
+                    android:textSize="10sp"
+                    android:textStyle="bold"
+                    android:drawableStart="@drawable/ic_badge_source"
+                    android:drawablePadding="3dp"
+                    android:gravity="center_vertical"
+                    android:visibility="gone"/>
+
+                <TextView
+                    android:id="@+id/resolution_badge"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="6dp"
+                    android:paddingLeft="4dp"
+                    android:paddingRight="4dp"
+                    android:background="@drawable/badge_bg"
+                    android:textColor="@android:color/white"
+                    android:textSize="10sp"
+                    android:textStyle="bold"
+                    android:drawableStart="@drawable/ic_badge_resolution"
+                    android:drawablePadding="3dp"
+                    android:gravity="center_vertical"
+                    android:visibility="gone"/>
+
+                <TextView
+                    android:id="@+id/format_badge"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="6dp"
+                    android:paddingLeft="4dp"
+                    android:paddingRight="4dp"
+                    android:background="@drawable/badge_bg"
+                    android:textColor="@android:color/white"
+                    android:textSize="10sp"
+                    android:textStyle="bold"
+                    android:drawableStart="@drawable/ic_badge_format"
+                    android:drawablePadding="3dp"
+                    android:gravity="center_vertical"
+                    android:visibility="gone"/>
+
+                <TextView
+                    android:id="@+id/ping_badge"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="6dp"
+                    android:paddingLeft="4dp"
+                    android:paddingRight="4dp"
+                    android:background="@drawable/badge_bg"
+                    android:textColor="@android:color/white"
+                    android:textSize="10sp"
+                    android:textStyle="bold"
+                    android:drawableStart="@drawable/ic_badge_ping"
+                    android:drawablePadding="3dp"
+                    android:gravity="center_vertical"
+                    android:visibility="gone"/>
+
+                <TextView
+                    android:id="@+id/audio_badge"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="6dp"
+                    android:paddingLeft="4dp"
+                    android:paddingRight="4dp"
+                    android:background="@drawable/badge_bg"
+                    android:textColor="@android:color/white"
+                    android:textSize="10sp"
+                    android:textStyle="bold"
+                    android:drawableStart="@drawable/ic_badge_audio"
+                    android:drawablePadding="3dp"
+                    android:gravity="center_vertical"
+                    android:visibility="gone"/>
+
+                <TextView
+                    android:id="@+id/channels_badge"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:paddingLeft="4dp"
+                    android:paddingRight="4dp"
+                    android:background="@drawable/badge_bg"
+                    android:textColor="@android:color/white"
+                    android:textSize="10sp"
+                    android:textStyle="bold"
+                    android:drawableStart="@drawable/ic_badge_channels"
+                    android:drawablePadding="3dp"
+                    android:gravity="center_vertical"
+                    android:visibility="gone"/>
+            </LinearLayout>
+        </HorizontalScrollView>
+
+    </LinearLayout>
+</androidx.cardview.widget.CardView>

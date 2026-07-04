@@ -1,0 +1,45 @@
+# Android generated files
+*.apk
+*.ap_
+*.aab
+**/build/
+app/build/
+.externalNativeBuild/
+.cxx/
+
+# Gradle files
+.gradle/
+gradle-wrapper.jar
+gradle-app.setting
+
+# Local configuration files
+local.properties
+
+# IDE files (Android Studio / IntelliJ IDEA)
+*.iml
+.idea/
+.vscode/
+
+# Sensitive files
+*.jks
+*.keystore
+secrets.properties
+release.keystore
+
+# Temporary / user files
+*.tmp
+*.bak
+*.swp
+*.swo
+*.log
+.DS_Store
+Thumbs.db
+captures/
+*.hprof
+*.prof
+
+# Kotlin / misc
+.kotlin/
+build_release.sh
+*.class
+*.dex
