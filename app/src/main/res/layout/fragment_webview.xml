@@ -1,0 +1,163 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/webview_container"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:focusable="true"
+    android:focusableInTouchMode="true"
+    android:background="#121212">
+
+    <!-- WebView Content (Full Screen) -->
+    <WebView
+        android:id="@+id/web_view"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <!-- WebView Navigation Toolbar (Overlay) -->
+    <LinearLayout
+        android:id="@+id/web_toolbar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="#E61F1F1F"
+        android:orientation="vertical"
+        android:translationY="-56dp"
+        android:visibility="gone">
+
+        <!-- Buttons row -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingHorizontal="16dp">
+
+            <ImageButton
+                android:id="@+id/btn_web_back"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:layout_marginEnd="16dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:src="@drawable/ic_arrow_back"
+                android:contentDescription="Go Back"
+                android:focusable="true"
+                android:padding="8dp"
+                android:scaleType="centerInside" />
+
+            <ImageButton
+                android:id="@+id/btn_web_forward"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:layout_marginEnd="16dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:src="@drawable/ic_arrow_forward"
+                android:contentDescription="Go Forward"
+                android:focusable="true"
+                android:padding="8dp"
+                android:scaleType="centerInside" />
+
+            <ImageButton
+                android:id="@+id/btn_web_refresh"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:layout_marginEnd="16dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:src="@drawable/ic_refresh_icon"
+                android:contentDescription="Refresh/Stop"
+                android:focusable="true"
+                android:padding="8dp"
+                android:scaleType="centerInside" />
+
+            <ImageButton
+                android:id="@+id/btn_web_home"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:layout_marginEnd="16dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:src="@drawable/ic_home"
+                android:contentDescription="Home"
+                android:focusable="true"
+                android:padding="8dp"
+                android:scaleType="centerInside" />
+
+            <ImageButton
+                android:id="@+id/btn_web_auto_fullscreen"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:layout_marginEnd="16dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:src="@drawable/ic_auto_fullscreen"
+                android:contentDescription="Auto Fullscreen Media"
+                android:focusable="true"
+                android:padding="8dp"
+                android:scaleType="centerInside" />
+
+            <ImageButton
+                android:id="@+id/btn_web_desktop_toggle"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:layout_marginEnd="16dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:src="@drawable/ic_desktop"
+                android:contentDescription="Toggle Desktop View"
+                android:focusable="true"
+                android:padding="8dp"
+                android:scaleType="centerInside" />
+
+            <ImageButton
+                android:id="@+id/btn_web_adblock_toggle"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:layout_marginEnd="16dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:src="@drawable/ic_check_circle"
+                android:contentDescription="Toggle Adblock"
+                android:focusable="true"
+                android:padding="8dp"
+                android:scaleType="centerInside"
+                android:tooltipText="Adblock" />
+
+            <EditText
+                android:id="@+id/browser_url_edit"
+                android:layout_width="0dp"
+                android:layout_height="40dp"
+                android:layout_weight="1"
+                android:layout_marginStart="8dp"
+                android:layout_marginEnd="8dp"
+                android:background="#33FFFFFF"
+                android:hint="Enter URL or search"
+                android:inputType="textUri"
+                android:imeOptions="actionGo"
+                android:paddingHorizontal="8dp"
+                android:singleLine="true"
+                android:textColor="@android:color/white"
+                android:textColorHint="#99FFFFFF"
+                android:textSize="13sp"
+                android:visibility="gone" />
+
+            <View
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1" />
+
+            <ImageButton
+                android:id="@+id/btn_web_close"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:src="@drawable/ic_close"
+                android:contentDescription="Close WebView"
+                android:focusable="true"
+                android:padding="8dp"
+                android:scaleType="centerInside" />
+        </LinearLayout>
+
+        <!-- Loading progress -->
+        <ProgressBar
+            android:id="@+id/web_progress"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="3dp"
+            android:visibility="gone" />
+    </LinearLayout>
+
+</FrameLayout>
