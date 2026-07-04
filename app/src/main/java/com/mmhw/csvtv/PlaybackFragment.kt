@@ -55,9 +55,8 @@ class PlaybackFragment : Fragment() {
     private var isFirstFrameRendered = false
     private var isStallRestarting = false
 
-    // Stall detector: recovers when video freezes but audio continues (common on some live streams)
+    // Stall detector: recovers when video freezes or buffers infinitely (common on some live streams)
     private var lastVideoPosition: Long = 0
-    private var lastAudioPosition: Long = 0
     private var stallChecksWithoutProgress = 0
     private val STALL_CHECK_INTERVAL_MS = 2000L
     private val STALL_THRESHOLD = 6 // ~12 seconds of no video progress while playing (less aggressive for live streams)
@@ -412,28 +411,36 @@ class PlaybackFragment : Fragment() {
     private fun startStallDetection() {
         handler.removeCallbacks(stallCheckRunnable)
         lastVideoPosition = player?.currentPosition ?: 0
-        lastAudioPosition = player?.currentPosition ?: 0
         stallChecksWithoutProgress = 0
         handler.postDelayed(stallCheckRunnable, STALL_CHECK_INTERVAL_MS)
     }
 
     private fun checkForVideoStall() {
         val p = player
-        if (p == null || !p.playWhenReady || p.playbackState != Player.STATE_READY) {
-            // Not actively playing video; reschedule lightly
+        if (p == null || !p.playWhenReady) {
+            stallChecksWithoutProgress = 0
             handler.postDelayed(stallCheckRunnable, STALL_CHECK_INTERVAL_MS)
             return
         }
+
         val currentPos = p.currentPosition
-        val hasVideo = p.videoFormat != null
-        if (hasVideo && currentPos <= lastVideoPosition + 500) {
-            // only count as video stall if audio is still progressing (video frozen but audio continues)
-            if (currentPos > lastAudioPosition + 100) {
+
+        if (p.playbackState == Player.STATE_BUFFERING) {
+            stallChecksWithoutProgress++
+            Log.d("PlaybackFragment", "Stall check: buffering ($stallChecksWithoutProgress/$STALL_THRESHOLD)")
+            if (stallChecksWithoutProgress >= STALL_THRESHOLD) {
+                Log.w("PlaybackFragment", "Video stalled (buffering timeout). Restarting player.")
+                restartPlayer()
+                return
+            }
+        } else if (p.playbackState == Player.STATE_READY) {
+            val advanced = currentPos - lastVideoPosition
+            // Expect position to advance if playing. 100ms is a safe minimum over 2 seconds.
+            if (advanced < 100 && currentPos > 0) {
                 stallChecksWithoutProgress++
-                Log.d("PlaybackFragment", "Stall check: no video progress ($stallChecksWithoutProgress/$STALL_THRESHOLD), pos=$currentPos")
+                Log.d("PlaybackFragment", "Stall check: frozen position ($stallChecksWithoutProgress/$STALL_THRESHOLD)")
                 if (stallChecksWithoutProgress >= STALL_THRESHOLD) {
-                    Log.w("PlaybackFragment", "Video stall detected (frames frozen but sound may continue). Restarting player.")
-                    // Do not show toast or UI messages on internal reloads/after load
+                    Log.w("PlaybackFragment", "Video stalled (decoder frozen). Restarting player.")
                     restartPlayer()
                     return
                 }
@@ -443,8 +450,8 @@ class PlaybackFragment : Fragment() {
         } else {
             stallChecksWithoutProgress = 0
         }
+
         lastVideoPosition = currentPos
-        lastAudioPosition = currentPos
         handler.postDelayed(stallCheckRunnable, STALL_CHECK_INTERVAL_MS)
     }
 }

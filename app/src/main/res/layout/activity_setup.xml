@@ -47,24 +47,44 @@
                     android:textSize="16sp"
                     android:textStyle="bold" />
 
-                <EditText
-                    android:id="@+id/sheet_link_input"
+                <LinearLayout
                     android:layout_width="match_parent"
-                    android:layout_height="48dp"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
                     android:layout_marginBottom="6dp"
-                    android:background="@drawable/edit_text_bg"
-                    android:hint="Enter CSV URL / Google sheet, Bitly, TinyURL ID"
-                    android:inputType="textUri"
-                    android:paddingHorizontal="16dp"
-                    android:textColor="@android:color/white"
-                    android:textColorHint="#66FFFFFF"
-                    android:textSize="15sp" />
+                    android:gravity="center_vertical">
+
+                    <EditText
+                        android:id="@+id/sheet_link_input"
+                        android:layout_width="0dp"
+                        android:layout_height="48dp"
+                        android:layout_weight="1"
+                        android:layout_marginEnd="8dp"
+                        android:background="@drawable/edit_text_bg"
+                        android:hint="Enter CSV URL / Google sheet, Bitly, TinyURL ID"
+                        android:inputType="textUri"
+                        android:paddingHorizontal="16dp"
+                        android:textColor="@android:color/white"
+                        android:textColorHint="#66FFFFFF"
+                        android:textSize="15sp" />
+
+                    <Button
+                        android:id="@+id/apply_button"
+                        android:layout_width="wrap_content"
+                        android:layout_height="48dp"
+                        android:background="@drawable/button_focus_bg"
+                        android:gravity="center"
+                        android:paddingHorizontal="20dp"
+                        android:text="Apply"
+                        android:textAllCaps="false"
+                        android:textColor="@color/button_text_color" />
+                </LinearLayout>
 
                 <TextView
                     android:id="@+id/textView"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginBottom="4dp"
+                    android:layout_marginBottom="16dp"
                     android:text="Supports full URLs (incl. shortlinks), published Google Sheet IDs, or shortlink IDs."
                     android:textColor="#A0FFFFFF"
                     android:textSize="13sp" />

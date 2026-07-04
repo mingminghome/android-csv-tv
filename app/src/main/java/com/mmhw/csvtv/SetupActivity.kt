@@ -58,7 +58,12 @@ class SetupActivity : FragmentActivity() {
         val resetAllButton = findViewById<Button>(R.id.reset_all_button)
         val sourceDetailsToggle = findViewById<Button>(R.id.source_details_toggle)
         defaultBrowserToggle = findViewById<Button>(R.id.default_browser_toggle)
+        val applyButton = findViewById<Button>(R.id.apply_button)
         val aboutButton = findViewById<Button>(R.id.about_button)
+
+        applyButton.setOnClickListener {
+            triggerApplySource()
+        }
 
         // Define update for browser early so all listeners can see it
         fun updateBrowserToggleText() {

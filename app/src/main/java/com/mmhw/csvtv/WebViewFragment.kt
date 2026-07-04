@@ -102,10 +102,6 @@ class WebViewFragment : Fragment() {
         webView = view.findViewById(R.id.web_view)
         container = view.findViewById(R.id.webview_container)
 
-        // Ensure hardware acceleration on the WebView container to reduce EGL fence sync errors
-        // (especially visible on emulators when using overlays like our pointer/toolbar)
-        container.setLayerType(View.LAYER_TYPE_HARDWARE, null)
-
         val activityContent = requireActivity().findViewById<ViewGroup>(android.R.id.content)
 
         // Initialize fullscreen and pointer containers EARLY so that setCursorVisibility
@@ -119,7 +115,6 @@ class WebViewFragment : Fragment() {
             visibility = View.GONE
             @Suppress("DEPRECATION")
             setBackgroundColor(resources.getColor(android.R.color.black))
-            setLayerType(View.LAYER_TYPE_HARDWARE, null)
         }
         activityContent?.addView(fullscreenContainer)
 
@@ -128,7 +123,6 @@ class WebViewFragment : Fragment() {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
-            setLayerType(View.LAYER_TYPE_HARDWARE, null)
         }
         activityContent?.addView(pointerContainer)
 
@@ -428,10 +422,6 @@ class WebViewFragment : Fragment() {
         webView.addJavascriptInterface(AndroidBridge(this), "AndroidBridge")
         webView.keepScreenOn = true
 
-        // Explicit hardware layer helps avoid EGL fence sync errors on emulators
-        // and ensures stable rendering with our custom pointer/toolbar overlay
-        webView.setLayerType(View.LAYER_TYPE_HARDWARE, null)
-
         webView.webViewClient = object : WebViewClient() {
             override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
                 super.onPageStarted(view, url, favicon)
@@ -669,7 +659,6 @@ class WebViewFragment : Fragment() {
             }
         }
 
-        webView.setLayerType(View.LAYER_TYPE_HARDWARE, null)
         webView.loadUrl(url)
         webView.isFocusable = false
         webView.isFocusableInTouchMode = false
@@ -1090,21 +1079,6 @@ class WebViewFragment : Fragment() {
                             el = el.parentElement;
                         }
                         if (!scrolled) {
-                            var elements = document.querySelectorAll('*');
-                            for (var i = 0; i < elements.length; i++) {
-                                var item = elements[i];
-                                var style = window.getComputedStyle(item);
-                                if ((style.overflowY === 'auto' || style.overflowY === 'scroll') && item.scrollHeight > item.clientHeight) {
-                                    var oldScroll = item.scrollTop;
-                                    item.scrollTop += amount;
-                                    if (Math.abs(item.scrollTop - oldScroll) > 0.5) {
-                                        scrolled = true;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        if (!scrolled) {
                             window.scrollBy(0, amount);
                         }
                     })();
@@ -1317,7 +1291,9 @@ class WebViewFragment : Fragment() {
         val downTime = System.currentTimeMillis()
         val eventTime = downTime + 10
         val downEvent = MotionEvent.obtain(downTime, eventTime, MotionEvent.ACTION_DOWN, x.toFloat(), y.toFloat(), 0)
+        downEvent.source = android.view.InputDevice.SOURCE_TOUCHSCREEN
         val upEvent = MotionEvent.obtain(downTime, eventTime, MotionEvent.ACTION_UP, x.toFloat(), y.toFloat(), 0)
+        upEvent.source = android.view.InputDevice.SOURCE_TOUCHSCREEN
 
         if (isInFullscreen) {
             fullscreenContainer.dispatchTouchEvent(downEvent)
@@ -1326,10 +1302,22 @@ class WebViewFragment : Fragment() {
             container.dispatchTouchEvent(downEvent)
             container.dispatchTouchEvent(upEvent)
 
-            // After synthetic click on webpage, try to show soft keyboard if an input
-            // field (text, search, etc.) received focus. Synthetic touches don't always
-            // auto-trigger the IME on WebView.
-            // Also force a focus() in JS and request on webView.
+            // Synthetic touches don't always trigger standard clicks in WebViews on newer OS versions.
+            // Execute a robust JavaScript click as a fallback.
+            val density = resources.displayMetrics.density
+            val cssX = (pointerX / density).toInt()
+            val cssY = (pointerY / density).toInt()
+            webView.evaluateJavascript("""
+                (function() {
+                    var el = document.elementFromPoint($cssX, $cssY);
+                    if (el) {
+                        el.click();
+                        el.focus();
+                    }
+                })();
+            """.trimIndent(), null)
+
+            // Try to show soft keyboard if an input field received focus.
             webView.evaluateJavascript(
                 "document.activeElement && document.activeElement.focus && document.activeElement.focus()",
                 null
