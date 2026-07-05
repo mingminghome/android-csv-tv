@@ -206,8 +206,14 @@ class MainFragment : BrowseSupportFragment() {
                         }
                     } else {
                         Log.w("MainFragment", "Failed to resolve URL: $url, error: $error")
-                        Log.d("MainFragment", "Opening WebViewFragment for URL: $url")
-                        openWebViewFragment(url)
+                        val finalUrlToOpen = if (!resolvedUrl.isNullOrBlank()) resolvedUrl else url
+                        if (Utils.isVideoStream(finalUrlToOpen, null)) {
+                            Log.d("MainFragment", "Opening PlaybackFragment for URL despite error: $finalUrlToOpen")
+                            openPlaybackFragment(finalUrlToOpen, null)
+                        } else {
+                            Log.d("MainFragment", "Opening WebViewFragment for URL: $finalUrlToOpen")
+                            openWebViewFragment(finalUrlToOpen)
+                        }
                     }
                 }
             }

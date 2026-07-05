@@ -411,8 +411,10 @@ object Utils {
                     return
                 }
 
-                // If HEAD already shows a clear error (e.g. 403/404 after redirect), treat as unreachable
-                if (!response.isSuccessful) {
+                // If HEAD shows an error, check if we should fallback to GET instead of failing immediately.
+                // 405 Method Not Allowed, 403 Forbidden, 501 Not Implemented might mean HEAD is blocked.
+                val looksLikeVideo = determineVideoFormat(resolvedUrl, null) != null
+                if (!response.isSuccessful && response.code != 405 && response.code != 403 && response.code != 501 && !looksLikeVideo) {
                     val meta = ResolvedMetadata(resolvedUrl, contentType, null, null, "Server returned HTTP ${response.code} (likely unreachable or blocked)")
                     urlCache[url] = meta
                     callback(resolvedUrl, contentType, null, null, meta.error, null, null)
@@ -422,8 +424,8 @@ object Utils {
                 val format = determineVideoFormat(resolvedUrl, contentType)
                 val isAudio = contentType?.startsWith("audio/", ignoreCase = true) == true
 
-                // If Content-Type is available and indicates a stream from HEAD request, complete resolution.
-                if (contentType != null && isVideoStream(resolvedUrl, contentType)) {
+                // If Content-Type is available and indicates a stream from HEAD request (and it was successful), complete resolution.
+                if (response.isSuccessful && contentType != null && isVideoStream(resolvedUrl, contentType)) {
                     val meta = ResolvedMetadata(resolvedUrl, contentType, format, null, null, isAudio, null)
                     urlCache[url] = meta
                     if (context != null && isShortUrl(url)) {

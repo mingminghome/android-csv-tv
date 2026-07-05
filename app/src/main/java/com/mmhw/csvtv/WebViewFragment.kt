@@ -29,6 +29,8 @@ import android.widget.ProgressBar
 import android.widget.Toast
 import androidx.fragment.app.Fragment
 import org.json.JSONObject
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 
 class WebViewFragment : Fragment() {
 
@@ -103,6 +105,21 @@ class WebViewFragment : Fragment() {
         container = view.findViewById(R.id.webview_container)
 
         val activityContent = requireActivity().findViewById<ViewGroup>(android.R.id.content)
+
+        ViewCompat.setOnApplyWindowInsetsListener(view) { v, insets ->
+            val imeVisible = insets.isVisible(WindowInsetsCompat.Type.ime())
+            if (!imeVisible && webInputKeyboardShown) {
+                webInputKeyboardShown = false
+                webView.isFocusable = false
+                webView.isFocusableInTouchMode = false
+                webView.clearFocus()
+                if (isAdded) {
+                    container.requestFocus()
+                    setCursorVisibility(true)
+                }
+            }
+            insets
+        }
 
         // Initialize fullscreen and pointer containers EARLY so that setCursorVisibility
         // and updateToolbarButtonsFocus can safely access the lateinit properties.
@@ -378,7 +395,7 @@ class WebViewFragment : Fragment() {
             id = View.generateViewId()
             setImageResource(R.drawable.cursor)
             visibility = View.VISIBLE
-            layoutParams = FrameLayout.LayoutParams(48, 48)
+            layoutParams = FrameLayout.LayoutParams(36, 36)
             // Use SOFTWARE layer for the cursor overlay. This prevents Chromium/WebView from
             // failing to create EGL fence sync objects (EGL_BAD_ATTRIBUTE) when hardware
             // layers are mixed with overlays on emulators.
@@ -662,6 +679,9 @@ class WebViewFragment : Fragment() {
         webView.loadUrl(url)
         webView.isFocusable = false
         webView.isFocusableInTouchMode = false
+        webView.setOnKeyListener { _, keyCode, event ->
+            handleKeyEvent(keyCode, event)
+        }
     }
 
     class AndroidBridge(private val fragment: WebViewFragment) {
@@ -868,12 +888,21 @@ class WebViewFragment : Fragment() {
             } else {
                 // --- GESTURE MODE (CURSOR IS HIDDEN) ---
                 when (keyCode) {
-                    // *** CHANGE: All 4 directionals now enter Cursor Mode ***
-                    KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                    KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN -> {
                         setCursorVisibility(true)
                         pointerX = (fullscreenContainer.width / 2).toFloat()
                         pointerY = (fullscreenContainer.height / 2).toFloat()
                         updatePointerPosition()
+                        return true
+                    }
+                    KeyEvent.KEYCODE_DPAD_LEFT -> {
+                        injectJavaScriptForVideo("video.currentTime -= 10;")
+                        showToast("Rewind 10s")
+                        return true
+                    }
+                    KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                        injectJavaScriptForVideo("video.currentTime += 10;")
+                        showToast("Forward 10s")
                         return true
                     }
                     KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
@@ -1020,8 +1049,8 @@ class WebViewFragment : Fragment() {
         val viewWidth = boundsView.width.toFloat()
         val viewHeight = boundsView.height.toFloat()
 
-        pointerX = pointerX.coerceIn(0f, viewWidth - pointer.width.toFloat())
-        pointerY = pointerY.coerceIn(0f, viewHeight - pointer.height.toFloat())
+        pointerX = pointerX.coerceIn(0f, viewWidth)
+        pointerY = pointerY.coerceIn(0f, viewHeight)
 
         if (!isInFullscreen) {
             val density = resources.displayMetrics.density
@@ -1040,7 +1069,7 @@ class WebViewFragment : Fragment() {
 
             if (deltaX < 0 && pointerX < scrollThresholdPx && webView.scrollX > 0) {
                 webView.scrollBy(-pointerSpeed.toInt(), 0)
-            } else if (deltaX > 0 && pointerX > container.width - pointer.width - scrollThresholdPx) {
+            } else if (deltaX > 0 && pointerX > container.width - scrollThresholdPx) {
                 val maxScrollX = (contentWidth * webView.scaleX - container.width).toInt().coerceAtLeast(0)
                 if (webView.scrollX < maxScrollX) webView.scrollBy(pointerSpeed.toInt(), 0)
             }
@@ -1051,7 +1080,7 @@ class WebViewFragment : Fragment() {
             var scrollAmount = 0
             if (pointerY < scrollThresholdPx) {
                 scrollAmount = -pointerSpeed.toInt()
-            } else if (pointerY > container.height - pointer.height - scrollThresholdPx) {
+            } else if (pointerY > container.height - scrollThresholdPx) {
                 scrollAmount = pointerSpeed.toInt()
             }
 
@@ -1090,19 +1119,31 @@ class WebViewFragment : Fragment() {
     }
 
     private fun updatePointerPosition() {
-        pointer.x = pointerX
-        pointer.y = pointerY
+        pointer.x = pointerX - pointer.width / 2f
+        pointer.y = pointerY - pointer.height / 2f
     }
 
     private fun toggleFullscreen() {
         val js = """
             (function() {
-                var video = document.querySelector('video');
-                if (video) {
+                var target = document.querySelector('video');
+                if (!target) {
+                    var iframes = document.querySelectorAll('iframe');
+                    var maxArea = 0;
+                    for (var i = 0; i < iframes.length; i++) {
+                        var rect = iframes[i].getBoundingClientRect();
+                        var area = rect.width * rect.height;
+                        if (area > maxArea) {
+                            maxArea = area;
+                            target = iframes[i];
+                        }
+                    }
+                }
+                if (target) {
                     if (document.fullscreenElement || document.webkitFullscreenElement) {
                         document.exitFullscreen ? document.exitFullscreen() : document.webkitExitFullscreen();
                     } else {
-                        video.requestFullscreen ? video.requestFullscreen() : video.webkitRequestFullscreen();
+                        target.requestFullscreen ? target.requestFullscreen() : target.webkitRequestFullscreen();
                     }
                 }
             })();
@@ -1142,7 +1183,7 @@ class WebViewFragment : Fragment() {
         if (currentFocusedIndex == -1) {
             val itemLocation = IntArray(2)
             var minDistance = Float.MAX_VALUE
-            val pointerCenterX = pointerX + pointer.width / 2f
+            val pointerCenterX = pointerX
             for (i in items.indices) {
                 val item = items[i]
                 item.getLocationInWindow(itemLocation)
@@ -1183,11 +1224,11 @@ class WebViewFragment : Fragment() {
         val localX = targetCenterX - containerLocation[0]
         val localY = targetCenterY - containerLocation[1]
 
-        pointerX = localX - pointer.width / 2f
-        pointerY = localY - pointer.height / 2f
+        pointerX = localX
+        pointerY = localY
 
-        pointerX = pointerX.coerceIn(0f, boundsView.width.toFloat() - pointer.width)
-        pointerY = pointerY.coerceIn(0f, boundsView.height.toFloat() - pointer.height)
+        pointerX = pointerX.coerceIn(0f, boundsView.width.toFloat())
+        pointerY = pointerY.coerceIn(0f, boundsView.height.toFloat())
 
         updatePointerPosition()
         updateToolbarButtonsFocus()
@@ -1206,7 +1247,7 @@ class WebViewFragment : Fragment() {
 
             var nearestItem: View? = null
             var minDistance = Float.MAX_VALUE
-            val pointerCenterX = pointerX + pointer.width / 2f
+            val pointerCenterX = pointerX
             val itemLocation = IntArray(2)
 
             for (item in items) {
