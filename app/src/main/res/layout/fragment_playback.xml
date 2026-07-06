@@ -44,14 +44,37 @@
             android:textStyle="bold" />
     </LinearLayout>
 
-    <TextView
-        android:id="@+id/error_text"
+    <LinearLayout
+        android:id="@+id/error_container"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_centerInParent="true"
-        android:background="#B3000000"
-        android:padding="16dp"
-        android:textColor="@color/red"
-        android:visibility="gone" />
+        android:orientation="vertical"
+        android:gravity="center_horizontal"
+        android:background="#CC000000"
+        android:padding="28dp"
+        android:visibility="gone">
+
+        <ImageView
+            android:id="@+id/error_icon"
+            android:layout_width="56dp"
+            android:layout_height="56dp"
+            android:layout_marginBottom="14dp"
+            android:src="@drawable/ic_cancel_circle"
+            android:tint="#FF5555"
+            android:tintMode="src_in"
+            android:contentDescription="Error icon" />
+
+        <TextView
+            android:id="@+id/error_text"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="#FF5555"
+            android:textSize="18sp"
+            android:textAlignment="center"
+            android:gravity="center"
+            android:maxWidth="680dp"
+            android:lineSpacingExtra="3dp" />
+    </LinearLayout>
 
 </RelativeLayout>
