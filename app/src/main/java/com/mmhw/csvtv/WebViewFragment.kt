@@ -59,7 +59,7 @@ class WebViewFragment : Fragment() {
     private val pointerHideDelay = 3000L
     private var pointerX = 0f
     private var pointerY = 0f
-    private val pointerSpeed = 15f
+    private val pointerSpeed = 20f
     private val scrollThreshold = 30f
 
     // Track if we recently showed keyboard for a web input via pointer click.

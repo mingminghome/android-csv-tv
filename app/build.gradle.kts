@@ -93,13 +93,17 @@ dependencies {
     implementation(libs.androidx.leanback)
     implementation("androidx.cardview:cardview:1.0.0")
 
-    // Media3 for ExoPlayer
-    implementation("androidx.media3:media3-exoplayer:1.4.0")
-    implementation("androidx.media3:media3-exoplayer-hls:1.4.0")
-    implementation("androidx.media3:media3-ui:1.4.0")
-    implementation("androidx.media3:media3-datasource:1.4.0")
-    implementation("androidx.media3:media3-datasource-rtmp:1.4.0")
-    implementation("androidx.media3:media3-datasource-okhttp:1.4.0")
+    // Media3 for ExoPlayer (aligned with Jellyfin FFmpeg decoder build)
+    val media3 = "1.5.0"
+    implementation("androidx.media3:media3-exoplayer:$media3")
+    implementation("androidx.media3:media3-exoplayer-hls:$media3")
+    implementation("androidx.media3:media3-ui:$media3")
+    implementation("androidx.media3:media3-datasource:$media3")
+    implementation("androidx.media3:media3-datasource-rtmp:$media3")
+    implementation("androidx.media3:media3-datasource-okhttp:$media3")
+    // Prebuilt FFmpeg audio (MPEG-L2/MP2, AC3, DTS, etc.) — many IPTV TS streams need this.
+    // GPL-3.0 (matches this project). Provides androidx.media3.decoder.ffmpeg.FfmpegAudioRenderer.
+    implementation("org.jellyfin.media3:media3-ffmpeg-decoder:1.5.0+1")
 
     // Glide for image loading
     implementation(libs.glide)

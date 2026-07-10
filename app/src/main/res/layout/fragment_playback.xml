@@ -6,18 +6,61 @@
     android:layout_height="match_parent"
     android:background="@android:color/black">
 
+    <!-- Keep PlayerView always laid out during playback. Toggling GONE destroys the
+         surface and triggers MediaCodec reconnect + detachBuffer spam (esp. on emulator). -->
     <androidx.media3.ui.PlayerView
         android:id="@+id/player_view"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        app:use_controller="true" />
+        app:use_controller="true"
+        app:surface_type="surface_view"
+        app:show_buffering="never"
+        app:keep_content_on_player_reset="true" />
 
     <ProgressBar
         android:id="@+id/loading_indicator"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_gravity="center"
+        android:layout_centerInParent="true"
         android:visibility="gone" />
+
+    <!-- Soft status chip for reconnect / retry — stays over video, not the fatal error panel -->
+    <LinearLayout
+        android:id="@+id/status_overlay"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_alignParentBottom="true"
+        android:layout_centerHorizontal="true"
+        android:layout_marginBottom="48dp"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:background="@drawable/status_chip_bg"
+        android:paddingStart="18dp"
+        android:paddingEnd="22dp"
+        android:paddingTop="12dp"
+        android:paddingBottom="12dp"
+        android:elevation="8dp"
+        android:visibility="gone">
+
+        <ProgressBar
+            android:id="@+id/status_progress"
+            style="?android:attr/progressBarStyleSmall"
+            android:layout_width="20dp"
+            android:layout_height="20dp"
+            android:layout_marginEnd="12dp"
+            android:indeterminate="true" />
+
+        <TextView
+            android:id="@+id/status_text"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="#F0F0F0"
+            android:textSize="16sp"
+            android:maxLines="2"
+            android:maxWidth="520dp"
+            android:gravity="center_vertical"
+            android:text="Reconnecting…" />
+    </LinearLayout>
 
     <LinearLayout
         android:id="@+id/audio_only_overlay"
@@ -44,37 +87,63 @@
             android:textStyle="bold" />
     </LinearLayout>
 
+    <!-- Soft fatal chip — same family as status_overlay (bottom, translucent, rounded) -->
     <LinearLayout
         android:id="@+id/error_container"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_centerInParent="true"
-        android:orientation="vertical"
-        android:gravity="center_horizontal"
-        android:background="#CC000000"
-        android:padding="28dp"
+        android:layout_alignParentBottom="true"
+        android:layout_centerHorizontal="true"
+        android:layout_marginBottom="48dp"
+        android:layout_marginStart="32dp"
+        android:layout_marginEnd="32dp"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:background="@drawable/error_chip_bg"
+        android:paddingStart="16dp"
+        android:paddingEnd="20dp"
+        android:paddingTop="14dp"
+        android:paddingBottom="14dp"
+        android:elevation="8dp"
         android:visibility="gone">
 
         <ImageView
             android:id="@+id/error_icon"
-            android:layout_width="56dp"
-            android:layout_height="56dp"
-            android:layout_marginBottom="14dp"
+            android:layout_width="22dp"
+            android:layout_height="22dp"
+            android:layout_marginEnd="12dp"
             android:src="@drawable/ic_cancel_circle"
-            android:tint="#FF5555"
+            android:tint="#FF8A80"
             android:tintMode="src_in"
             android:contentDescription="Error icon" />
 
-        <TextView
-            android:id="@+id/error_text"
+        <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:textColor="#FF5555"
-            android:textSize="18sp"
-            android:textAlignment="center"
-            android:gravity="center"
-            android:maxWidth="680dp"
-            android:lineSpacingExtra="3dp" />
+            android:orientation="vertical"
+            android:gravity="start">
+
+            <TextView
+                android:id="@+id/error_title"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Unable to play"
+                android:textColor="#FFCDD2"
+                android:textSize="15sp"
+                android:textStyle="bold"
+                android:maxLines="1" />
+
+            <TextView
+                android:id="@+id/error_text"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:textColor="#E0E0E0"
+                android:textSize="14sp"
+                android:maxLines="3"
+                android:maxWidth="480dp"
+                android:lineSpacingExtra="2dp" />
+        </LinearLayout>
     </LinearLayout>
 
 </RelativeLayout>
