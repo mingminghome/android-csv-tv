@@ -28,6 +28,8 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.rtmp.RtmpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.hls.HlsMediaSource
+import androidx.media3.exoplayer.hls.playlist.DefaultHlsPlaylistTracker
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
 import androidx.media3.exoplayer.DefaultRenderersFactory
@@ -77,7 +79,17 @@ class PlaybackFragment : Fragment() {
     private var retryCount = 0
     private val maxRetries = 3
     private val retryDelayMs = 3000L
+    /** Live ENDED / playlist-stuck recoveries use a separate budget so brief stalls don't burn error retries. */
+    private var liveRecoverCount = 0
+    private val maxLiveRecovers = 8
+    private val liveRecoverDelayMs = 2500L
     private val handler = Handler(Looper.getMainLooper())
+
+    /**
+     * Media3 default is 3.5× targetDuration (~14s for 4s segments). IPTV gateways often pause
+     * playlist updates longer without being truly dead — raise tolerance before PlaylistStuckException.
+     */
+    private val hlsPlaylistStuckCoefficient = 7.0
 
     // Defaults; re-tuned at runtime from device RAM (4K buffers of 60–120s OOM Fire TV sticks)
     private var minBufferMs = 20000
@@ -305,6 +317,7 @@ class PlaybackFragment : Fragment() {
 
                 val mimeType = arguments?.getString("mime_type")
                 val format = Utils.determineVideoFormat(urlToPlay, mimeType)
+                val isLikelyLive = isLikelyLiveStream(urlToPlay, format, mimeType)
                 val mediaItem = MediaItem.Builder()
                     .setUri(urlToPlay)
                     .apply {
@@ -326,17 +339,13 @@ class PlaybackFragment : Fragment() {
                     .build()
                 this@PlaybackFragment.currentMediaItem = mediaItem
 
-                val mediaSource = if (urlToPlay.startsWith("rtmp://")) {
-                    val rtmpDataSourceFactory = RtmpDataSource.Factory()
-                    DefaultMediaSourceFactory(rtmpDataSourceFactory).createMediaSource(mediaItem)
-                } else {
-                    DefaultMediaSourceFactory(httpDataSourceFactory!!).createMediaSource(mediaItem)
-                }
+                val mediaSource = createMediaSource(urlToPlay, format, mediaItem)
 
                 setMediaSource(mediaSource)
                 prepare()
-                // Only seek for non-live / VOD; seeking a live window to a stale offset can drop A/V.
-                if (playbackPosition > 0) {
+                // Live/HLS: always join the default/live edge. Seeking a sliding window to a
+                // stale offset (or near the end of a short residual window) can yield immediate ENDED.
+                if (playbackPosition > 0 && !isLikelyLive) {
                     seekTo(playbackPosition)
                 }
                 playWhenReady = false
@@ -369,11 +378,13 @@ class PlaybackFragment : Fragment() {
                             Player.STATE_READY -> {
                                 if (!isShowingFatalError) hideError()
                                 hideStatus()
-                                retryCount = 0
                                 decoderRetryCount = 0
                                 consecutiveStallRestarts = 0
                                 val wasStallRestarting = isStallRestarting
                                 isStallRestarting = false
+                                // Only clear retry budgets after stable play — READY+one-frame+ENDED
+                                // must not reset counters (that loop never exhausts maxLiveRecovers).
+                                scheduleStablePlaybackCredit()
 
                                 if (!wasStallRestarting) {
                                     loadingIndicator?.animate()?.alpha(0f)?.setDuration(200)?.withEndAction {
@@ -439,7 +450,6 @@ class PlaybackFragment : Fragment() {
                             Player.STATE_ENDED -> {
                                 loadingIndicator?.visibility = View.GONE
                                 if (!isShowingFatalError) hideError()
-                                hideStatus()
                                 audioOnlyOverlay?.visibility = View.GONE
                                 if (!isShowingFatalError) {
                                     playerView?.visibility = View.VISIBLE
@@ -447,6 +457,14 @@ class PlaybackFragment : Fragment() {
                                 }
                                 playerView?.useController = true
                                 Log.d(TAG, "Playback state changed: ENDED")
+
+                                // IPTV/live HLS often hits ENDED after a stuck playlist or a short
+                                // residual window (one frame then stop). Rejoin the live edge.
+                                if (!isShowingFatalError && shouldRecoverLiveEnded()) {
+                                    scheduleLiveRecover("Stream ended — rejoining…")
+                                } else {
+                                    hideStatus()
+                                }
                             }
                             Player.STATE_IDLE -> {
                                 // Stay visible during brief IDLE between stop/prepare recovery.
@@ -476,6 +494,7 @@ class PlaybackFragment : Fragment() {
                             playerView?.alpha = 1f
                         }
                         handler.removeCallbacks(stallCheckRunnable)
+                        handler.removeCallbacks(stablePlaybackCreditRunnable)
                         isStallRestarting = false
 
                         val isVideoError = isVideoDecoderError(error)
@@ -556,13 +575,23 @@ class PlaybackFragment : Fragment() {
                             return
                         }
 
+                        // Playlist stuck / source IO: clear any live seek offset before rejoin.
+                        if (isPlaylistStuckOrSourceError(error)) {
+                            playbackPosition = 0L
+                        }
+
                         if (retryCount < maxRetries) {
                             retryCount++
+                            val delay = if (isPlaylistStuckOrSourceError(error)) {
+                                retryDelayMs + 1500L
+                            } else {
+                                retryDelayMs
+                            }
                             showStatus("Reconnecting… ($retryCount/$maxRetries)")
                             Log.d(TAG, "Player error, retrying ($retryCount/$maxRetries): ${error.message}")
                             handler.postDelayed({
                                 if (isAdded) restartPlayer(fullReinit = true)
-                            }, retryDelayMs)
+                            }, delay)
                         } else {
                             isShowingFatalError = true
                             showFatalError(
@@ -585,8 +614,13 @@ class PlaybackFragment : Fragment() {
 
                     override fun onRenderedFirstFrame() {
                         isFirstFrameRendered = true
-                        playbackPosition = player?.currentPosition ?: 0
-                        Log.d(TAG, "First frame rendered at position: $playbackPosition")
+                        // Never persist live edge offsets for later seeks — they go stale quickly.
+                        playbackPosition = if (player?.isCurrentMediaItemLive == true) {
+                            0L
+                        } else {
+                            player?.currentPosition ?: 0
+                        }
+                        Log.d(TAG, "First frame rendered at position: ${player?.currentPosition}")
                         startStallDetection()
                     }
                 })
@@ -594,6 +628,144 @@ class PlaybackFragment : Fragment() {
 
         playerView?.player = player
         Log.d(TAG, "Player initialized with URL: $urlToPlay decoderMode=$decoderMode")
+    }
+
+    /**
+     * Build media source. HLS uses a dedicated factory with a more tolerant playlist-stuck
+     * coefficient for flaky IPTV gateways (default 3.5× is too aggressive).
+     */
+    private fun createMediaSource(
+        urlToPlay: String,
+        format: String?,
+        mediaItem: MediaItem
+    ): androidx.media3.exoplayer.source.MediaSource {
+        if (urlToPlay.startsWith("rtmp://")) {
+            val rtmpDataSourceFactory = RtmpDataSource.Factory()
+            return DefaultMediaSourceFactory(rtmpDataSourceFactory).createMediaSource(mediaItem)
+        }
+
+        val dataSourceFactory = httpDataSourceFactory!!
+        val isHls = format == "M3U8" ||
+            urlToPlay.contains(".m3u8", ignoreCase = true) ||
+            mediaItem.localConfiguration?.mimeType.equals("application/x-mpegURL", ignoreCase = true) ||
+            mediaItem.localConfiguration?.mimeType.equals(MimeTypes.APPLICATION_M3U8, ignoreCase = true)
+
+        return if (isHls) {
+            HlsMediaSource.Factory(dataSourceFactory)
+                .setAllowChunklessPreparation(true)
+                .setPlaylistTrackerFactory { hlsDataSourceFactory, loadErrorHandlingPolicy, playlistParserFactory ->
+                    DefaultHlsPlaylistTracker(
+                        hlsDataSourceFactory,
+                        loadErrorHandlingPolicy,
+                        playlistParserFactory,
+                        hlsPlaylistStuckCoefficient
+                    )
+                }
+                .createMediaSource(mediaItem)
+        } else {
+            DefaultMediaSourceFactory(dataSourceFactory).createMediaSource(mediaItem)
+        }
+    }
+
+    /** True for channel-style streams where ENDED usually means "window died", not VOD complete. */
+    private fun isLikelyLiveStream(url: String, format: String?, mimeType: String?): Boolean {
+        if (url.startsWith("rtmp://")) return true
+        if (format == "M3U8") return true
+        if (mimeType?.contains("mpegURL", ignoreCase = true) == true) return true
+        if (mimeType?.equals(MimeTypes.APPLICATION_M3U8, ignoreCase = true) == true) return true
+        val lower = url.lowercase()
+        return lower.contains(".m3u8") ||
+            lower.contains("/live") ||
+            lower.contains("playlist") ||
+            // Common IPTV gateway shapes (php?id=…, streaming.m3u8 proxies)
+            (lower.contains(".php") && lower.contains("id="))
+    }
+
+    private fun shouldRecoverLiveEnded(): Boolean {
+        val p = player
+        if (p?.isCurrentMediaItemLive == true) return true
+        val url = resolvedUrl ?: return false
+        val mimeType = arguments?.getString("mime_type")
+        val format = Utils.determineVideoFormat(url, mimeType)
+        return isLikelyLiveStream(url, format, mimeType)
+    }
+
+    /**
+     * After ~8s still READY with frames, treat the stream as healthy and reset recover budgets.
+     * Avoids infinite reconnect when the player flashes READY then ENDED every cycle.
+     */
+    private fun scheduleStablePlaybackCredit() {
+        handler.removeCallbacks(stablePlaybackCreditRunnable)
+        handler.postDelayed(stablePlaybackCreditRunnable, 8000L)
+    }
+
+    private val stablePlaybackCreditRunnable = Runnable {
+        val p = player ?: return@Runnable
+        if (!isAdded || isShowingFatalError) return@Runnable
+        if (p.playbackState == Player.STATE_READY && p.playWhenReady) {
+            if (retryCount != 0 || liveRecoverCount != 0) {
+                Log.d(TAG, "Stable playback — clearing retry budgets (was retry=$retryCount live=$liveRecoverCount)")
+            }
+            retryCount = 0
+            liveRecoverCount = 0
+        }
+    }
+
+    private fun scheduleLiveRecover(statusMessage: String) {
+        handler.removeCallbacks(stablePlaybackCreditRunnable)
+        if (liveRecoverCount >= maxLiveRecovers) {
+            isShowingFatalError = true
+            showFatalError(
+                title = "Stream unavailable",
+                message = "Live stream stopped updating. Try again later."
+            )
+            playerView?.useController = false
+            Log.e(TAG, "Live recover exhausted after $maxLiveRecovers attempts")
+            releasePlayerSafely()
+            player = null
+            handler.postDelayed({
+                if (isAdded && !isDetached) {
+                    parentFragmentManager.popBackStack()
+                }
+            }, 6000L)
+            return
+        }
+
+        liveRecoverCount++
+        playbackPosition = 0L
+        showStatus("$statusMessage ($liveRecoverCount/$maxLiveRecovers)")
+        Log.w(TAG, "Live recover $liveRecoverCount/$maxLiveRecovers: $statusMessage")
+        handler.postDelayed({
+            if (isAdded) restartPlayer(fullReinit = true)
+        }, liveRecoverDelayMs)
+    }
+
+    private fun isPlaylistStuckOrSourceError(error: PlaybackException): Boolean {
+        if (error.errorCode == PlaybackException.ERROR_CODE_IO_UNSPECIFIED ||
+            error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
+            error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ||
+            error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ||
+            error.errorCode == PlaybackException.ERROR_CODE_TIMEOUT
+        ) {
+            return true
+        }
+        var cause: Throwable? = error
+        while (cause != null) {
+            val name = cause.javaClass.simpleName
+            if (name.contains("PlaylistStuck", ignoreCase = true) ||
+                name.contains("PlaylistReset", ignoreCase = true)
+            ) {
+                return true
+            }
+            val msg = cause.message.orEmpty()
+            if (msg.contains("PlaylistStuck", ignoreCase = true) ||
+                msg.contains("Source error", ignoreCase = true)
+            ) {
+                return true
+            }
+            cause = cause.cause
+        }
+        return error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW
     }
 
     private fun schedulePlayerReinit(delayMs: Long) {
@@ -951,6 +1123,7 @@ class PlaybackFragment : Fragment() {
             val urlToPlay = resolvedUrl ?: return
             val mimeType = arguments?.getString("mime_type")
             val format = Utils.determineVideoFormat(urlToPlay, mimeType)
+            val isLikelyLive = isLikelyLiveStream(urlToPlay, format, mimeType)
             val mediaItem = MediaItem.Builder()
                 .setUri(urlToPlay)
                 .apply {
@@ -971,17 +1144,13 @@ class PlaybackFragment : Fragment() {
                 .build()
             currentMediaItem = mediaItem
 
-            val mediaSource = if (urlToPlay.startsWith("rtmp://")) {
-                val rtmpDataSourceFactory = RtmpDataSource.Factory()
-                DefaultMediaSourceFactory(rtmpDataSourceFactory).createMediaSource(mediaItem)
-            } else {
-                DefaultMediaSourceFactory(httpDataSourceFactory!!).createMediaSource(mediaItem)
-            }
+            val mediaSource = createMediaSource(urlToPlay, format, mediaItem)
 
             p.setMediaSource(mediaSource)
             p.prepare()
             // For live, prefer joining the live edge rather than a stale position after a stall.
-            if (p.isCurrentMediaItemLive) {
+            if (isLikelyLive || p.isCurrentMediaItemLive) {
+                playbackPosition = 0L
                 p.seekToDefaultPosition()
             } else {
                 p.seekTo(playbackPosition)
@@ -1139,6 +1308,8 @@ class PlaybackFragment : Fragment() {
         isShowingFatalError = false
         isShowingStatus = false
         consecutiveStallRestarts = 0
+        retryCount = 0
+        liveRecoverCount = 0
         decoderMode = DECODER_MODE_HARDWARE
         decoderRetryCount = 0
         excludeEmulatorDecoders = false
