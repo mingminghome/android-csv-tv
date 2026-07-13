@@ -43,7 +43,7 @@
                     android:layout_marginBottom="6dp"
                     android:gravity="start"
                     android:text="CSV Source"
-                    android:textColor="#00E5FF"
+                    android:textColor="#BDBDBD"
                     android:textSize="16sp"
                     android:textStyle="bold" />
 
@@ -97,7 +97,7 @@
                     android:layout_marginBottom="6dp"
                     android:gravity="start"
                     android:text="Input Options"
-                    android:textColor="#00E5FF"
+                    android:textColor="#BDBDBD"
                     android:textSize="15sp"
                     android:textStyle="bold" />
 
@@ -160,7 +160,7 @@
                     android:layout_marginBottom="6dp"
                     android:gravity="start"
                     android:text="Settings"
-                    android:textColor="#00E5FF"
+                    android:textColor="#BDBDBD"
                     android:textSize="15sp"
                     android:textStyle="bold" />
 
@@ -199,7 +199,7 @@
                     android:layout_marginBottom="6dp"
                     android:gravity="start"
                     android:text="Utilities"
-                    android:textColor="#00E5FF"
+                    android:textColor="#BDBDBD"
                     android:textSize="15sp"
                     android:textStyle="bold" />
 
@@ -238,7 +238,7 @@
                     android:layout_marginBottom="6dp"
                     android:gravity="start"
                     android:text="About"
-                    android:textColor="#00E5FF"
+                    android:textColor="#BDBDBD"
                     android:textSize="15sp"
                     android:textStyle="bold" />
 

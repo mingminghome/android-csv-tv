@@ -19,7 +19,7 @@
             android:layout_width="48dp"
             android:layout_height="48dp"
             android:layout_marginBottom="16dp"
-            android:indeterminateTint="#00E5FF"/>
+            android:indeterminateTint="#BDBDBD"/>
 
         <TextView
             android:id="@+id/loading_message"

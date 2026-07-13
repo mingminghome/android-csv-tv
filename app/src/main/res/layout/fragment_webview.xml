@@ -20,7 +20,7 @@
         android:layout_width="match_parent"
         android:layout_height="4dp"
         android:layout_gravity="top"
-        android:progressTint="#00E5FF"
+        android:progressTint="#BDBDBD"
         android:visibility="gone" />
 
     <!-- WebView Navigation Toolbar (Overlay) -->

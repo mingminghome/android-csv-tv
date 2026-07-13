@@ -244,8 +244,12 @@ class PlaybackFragment : Fragment() {
                 .connectionPool(okhttp3.ConnectionPool(5, 5, TimeUnit.MINUTES))
                 .sslSocketFactory(createUnsafeSslContext().socketFactory, createUnsafeTrustManager())
                 .hostnameVerifier { _, _ -> true }
-                .connectTimeout(10, TimeUnit.SECONDS)
-                .readTimeout(15, TimeUnit.SECONDS)
+                // IPTV/CDN segments often stall mid-read; 15s was too aggressive and
+                // produced Source error (SocketTimeout) after long BUFFERING with no recovery.
+                .connectTimeout(15, TimeUnit.SECONDS)
+                .readTimeout(30, TimeUnit.SECONDS)
+                .callTimeout(60, TimeUnit.SECONDS)
+                .retryOnConnectionFailure(true)
                 .build()
 
             httpDataSourceFactory = OkHttpDataSource.Factory(okHttpClient)
@@ -352,7 +356,6 @@ class PlaybackFragment : Fragment() {
 
                 addListener(object : Player.Listener {
                     override fun onPlaybackStateChanged(playbackState: Int) {
-                        handler.removeCallbacks(stallCheckRunnable)
                         when (playbackState) {
                             Player.STATE_BUFFERING -> {
                                 // Never GONE the PlayerView here — surface must stay connected.
@@ -374,6 +377,13 @@ class PlaybackFragment : Fragment() {
                                 playerView?.useController = false
                                 playerView?.hideController()
                                 Log.d(TAG, "Playback state changed: BUFFERING")
+                                // Critical: do NOT cancel stall detection on BUFFERING.
+                                // Previously removeCallbacks(stallCheckRunnable) on every state
+                                // change left long rebuffers (60s+) without auto-reconnect until
+                                // OkHttp finally threw SocketTimeoutException.
+                                if (isFirstFrameRendered && !isShowingFatalError) {
+                                    ensureStallDetectionRunning()
+                                }
                             }
                             Player.STATE_READY -> {
                                 if (!isShowingFatalError) hideError()
@@ -448,6 +458,7 @@ class PlaybackFragment : Fragment() {
                                 }
                             }
                             Player.STATE_ENDED -> {
+                                handler.removeCallbacks(stallCheckRunnable)
                                 loadingIndicator?.visibility = View.GONE
                                 if (!isShowingFatalError) hideError()
                                 audioOnlyOverlay?.visibility = View.GONE
@@ -1325,6 +1336,12 @@ class PlaybackFragment : Fragment() {
         handler.postDelayed(stallCheckRunnable, STALL_CHECK_INTERVAL_MS)
     }
 
+    /** Resume stall polling if it was cancelled; does not reset counters (for BUFFERING). */
+    private fun ensureStallDetectionRunning() {
+        handler.removeCallbacks(stallCheckRunnable)
+        handler.postDelayed(stallCheckRunnable, STALL_CHECK_INTERVAL_MS)
+    }
+
     private fun checkForVideoStall() {
         val p = player
         if (p == null || !p.playWhenReady) {
@@ -1333,20 +1350,32 @@ class PlaybackFragment : Fragment() {
             return
         }
 
-        val currentPos = p.currentPosition
+        // Skip while we are already mid-recovery restart
+        if (isStallRestarting || isShowingFatalError) {
+            handler.postDelayed(stallCheckRunnable, STALL_CHECK_INTERVAL_MS)
+            return
+        }
 
-        if (p.playbackState == Player.STATE_BUFFERING) {
+        val currentPos = p.currentPosition
+        val state = p.playbackState
+
+        if (state == Player.STATE_BUFFERING) {
             stallChecksWithoutProgress++
             Log.d(TAG, "Stall check: buffering ($stallChecksWithoutProgress/$STALL_THRESHOLD)")
             if (stallChecksWithoutProgress >= STALL_THRESHOLD) {
                 Log.w(TAG, "Video stalled (buffering timeout). Restarting player.")
                 showStatus("Stream stalled — reconnecting…")
+                // Soft re-prepare first; full re-init after repeated stalls (restartPlayer counts).
                 restartPlayer(fullReinit = consecutiveStallRestarts >= 1)
                 return
             }
-        } else if (p.playbackState == Player.STATE_READY) {
+        } else if (state == Player.STATE_READY) {
             val advanced = currentPos - lastVideoPosition
-            if (advanced < 100 && currentPos > 0) {
+            // Live streams can sit at a fixed edge position while still "playing";
+            // also treat no-advance while isPlaying=false as a stall.
+            val notAdvancing = advanced < 100 && currentPos > 0
+            val frozenWhilePlaying = notAdvancing && (p.isPlaying || p.playWhenReady)
+            if (frozenWhilePlaying) {
                 stallChecksWithoutProgress++
                 Log.d(TAG, "Stall check: frozen position ($stallChecksWithoutProgress/$STALL_THRESHOLD)")
                 if (stallChecksWithoutProgress >= STALL_THRESHOLD) {
@@ -1355,10 +1384,11 @@ class PlaybackFragment : Fragment() {
                     restartPlayer(fullReinit = true)
                     return
                 }
-            } else {
+            } else if (advanced >= 100) {
                 stallChecksWithoutProgress = 0
             }
-        } else {
+        } else if (state == Player.STATE_IDLE || state == Player.STATE_ENDED) {
+            // Recovery path owns these states; don't thrash stall counter
             stallChecksWithoutProgress = 0
         }
 

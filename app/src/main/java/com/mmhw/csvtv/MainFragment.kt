@@ -1,5 +1,6 @@
 package com.mmhw.csvtv
 
+import android.app.Dialog
 import android.content.Intent
 import android.content.Context
 import android.content.IntentFilter
@@ -9,6 +10,12 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.view.View
+import android.view.ViewGroup
+import android.view.Window
+import android.widget.Button
+import android.widget.ProgressBar
+import android.widget.TextView
 import android.widget.Toast
 import androidx.fragment.app.FragmentManager
 import androidx.leanback.app.BrowseSupportFragment
@@ -29,17 +36,39 @@ class MainFragment : BrowseSupportFragment() {
 
     private var latestUpdateVersion: String? = null
     private var latestUpdateApkUrl: String? = null
+    private var latestUpdateTitle: String? = null
+    private var latestUpdateNotes: String? = null
     private var updateDownloadId: Long = -1L
     private var isUpdateDownloaded = false
     private var isUpdateDownloadInProgress = false
 
+    private var updateDialog: Dialog? = null
+    private var updateActionBtn: Button? = null
+    private var updateCancelBtn: Button? = null
+    private var updateProgressContainer: View? = null
+    private var updateProgressBar: ProgressBar? = null
+    private var updateProgressLabel: TextView? = null
+    private var updateProgressPercent: TextView? = null
+
     private var isActive = true
+
+    private val downloadProgressRunnable = object : Runnable {
+        override fun run() {
+            if (!isUpdateDownloadInProgress || updateDownloadId == -1L) return
+            val ctx = context ?: return
+            queryAndUpdateDownloadProgress(ctx)
+            if (isUpdateDownloadInProgress) {
+                handler.postDelayed(this, 400L)
+            }
+        }
+    }
 
     private val onDownloadCompleteReceiver = object : android.content.BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val id = intent?.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L) ?: -1L
             if (id == updateDownloadId && id != -1L) {
                 context?.let { ctx ->
+                    handler.removeCallbacks(downloadProgressRunnable)
                     val downloadManager = ctx.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
                     val query = DownloadManager.Query().setFilterById(id)
                     val cursor = downloadManager.query(query)
@@ -54,14 +83,15 @@ class MainFragment : BrowseSupportFragment() {
                                 ctx.getSharedPreferences("AppPrefs", Context.MODE_PRIVATE)
                                     .edit().putString("downloaded_update_version", version).apply()
                             }
-                            // Auto-launch the system installer (completes the "click card to update" flow)
-                            installApk(ctx)
+                            refreshUpdateDialogUi()
+                            Toast.makeText(ctx, "Download complete. Tap Install to continue.", Toast.LENGTH_LONG).show()
                         } else {
                             isUpdateDownloadInProgress = false
                             val reasonIdx = cursor.getColumnIndex(DownloadManager.COLUMN_REASON)
                             val reason = if (reasonIdx != -1) cursor.getInt(reasonIdx) else -1
                             Log.e("MainFragment", "Download failed. Status: $status, Reason: $reason")
                             Toast.makeText(ctx, "Update download failed.", Toast.LENGTH_SHORT).show()
+                            refreshUpdateDialogUi()
                         }
                         cursor.close()
                     }
@@ -153,18 +183,7 @@ class MainFragment : BrowseSupportFragment() {
                 return
             }
             url.equals("update", ignoreCase = true) || title.startsWith("Update available", ignoreCase = true) -> {
-                val context = requireContext()
-                if (isUpdateDownloaded) {
-                    installApk(context)
-                } else if (isUpdateDownloadInProgress) {
-                    Toast.makeText(context, "Update download is already in progress.", Toast.LENGTH_SHORT).show()
-                } else {
-                    latestUpdateApkUrl?.let { apkUrl ->
-                        startUpdateDownload(context, apkUrl)
-                    } ?: run {
-                        Toast.makeText(context, "Update URL not found", Toast.LENGTH_SHORT).show()
-                    }
-                }
+                showUpdateDialog()
                 return
             }
             url.equals("refresh", ignoreCase = true) || title.equals("Refresh", ignoreCase = true) -> {
@@ -194,10 +213,24 @@ class MainFragment : BrowseSupportFragment() {
                 Toast.makeText(requireContext(), "Resolving URL...", Toast.LENGTH_SHORT).show()
 
                 Utils.resolveUrl(url, requireContext()) { resolvedUrl, contentType, format, resolution, error, isAudioOnly, audioChannels ->
+                    val finalUrlToOpen = if (!resolvedUrl.isNullOrBlank()) resolvedUrl else url
+                    // Prefer native player for real streams and IPTV gateways so stall recovery works.
+                    // WebView is a last resort for generic web pages (no auto-reconnect for live video).
+                    val preferNativePlayer =
+                        Utils.isVideoStream(finalUrlToOpen, contentType) ||
+                            Utils.looksLikeIptvStreamUrl(finalUrlToOpen) ||
+                            format == "M3U8" || format == "MP4" || format == "TS" || format == "RTMP" ||
+                            contentType?.contains("mpegurl", ignoreCase = true) == true
+
                     if (!resolvedUrl.isNullOrBlank() && error == null) {
                         Utils.incrementWatchCount(requireContext(), url)
-                        Log.d("MainFragment", "Resolved URL: $url -> $resolvedUrl, Content-Type: $contentType, isVideoStream=${Utils.isVideoStream(resolvedUrl, contentType)}")
-                        if (Utils.isVideoStream(resolvedUrl, contentType)) {
+                        Log.d(
+                            "MainFragment",
+                            "Resolved URL: $url -> $resolvedUrl, Content-Type: $contentType, " +
+                                "format=$format, isVideoStream=${Utils.isVideoStream(resolvedUrl, contentType)}, " +
+                                "preferNative=$preferNativePlayer"
+                        )
+                        if (preferNativePlayer) {
                             Log.d("MainFragment", "Opening PlaybackFragment for resolved URL: $resolvedUrl, Content-Type: $contentType")
                             openPlaybackFragment(resolvedUrl, contentType)
                         } else {
@@ -205,11 +238,11 @@ class MainFragment : BrowseSupportFragment() {
                             openWebViewFragment(resolvedUrl)
                         }
                     } else {
-                        Log.w("MainFragment", "Failed to resolve URL: $url, error: $error")
-                        val finalUrlToOpen = if (!resolvedUrl.isNullOrBlank()) resolvedUrl else url
-                        if (Utils.isVideoStream(finalUrlToOpen, null)) {
+                        Log.w("MainFragment", "Failed to resolve URL: $url, error: $error, preferNative=$preferNativePlayer")
+                        Utils.incrementWatchCount(requireContext(), url)
+                        if (preferNativePlayer) {
                             Log.d("MainFragment", "Opening PlaybackFragment for URL despite error: $finalUrlToOpen")
-                            openPlaybackFragment(finalUrlToOpen, null)
+                            openPlaybackFragment(finalUrlToOpen, contentType)
                         } else {
                             Log.d("MainFragment", "Opening WebViewFragment for URL: $finalUrlToOpen")
                             openWebViewFragment(finalUrlToOpen)
@@ -453,6 +486,7 @@ class MainFragment : BrowseSupportFragment() {
         isActive = false
         handler.removeCallbacksAndMessages(null)
         focusedVideoRefreshHandler.removeCallbacksAndMessages(null)
+        dismissUpdateDialog()
         try {
             requireContext().unregisterReceiver(onDownloadCompleteReceiver)
         } catch (e: Exception) {
@@ -463,8 +497,12 @@ class MainFragment : BrowseSupportFragment() {
     private fun checkForUpdates() {
         val context = context ?: return
         Log.d("MainFragment", "Checking for updates...")
-        Utils.checkAppUpdate(context) { newVersion, apkUrl, error ->
-            Log.d("MainFragment", "Update check result: newVersion=$newVersion, apkUrl=$apkUrl, error=$error (currentVersion from package: ${context.packageManager.getPackageInfo(context.packageName, 0).versionName})")
+        Utils.checkAppUpdate(context) { newVersion, apkUrl, releaseTitle, releaseNotes, error ->
+            Log.d(
+                "MainFragment",
+                "Update check result: newVersion=$newVersion, apkUrl=$apkUrl, error=$error " +
+                    "(currentVersion from package: ${context.packageManager.getPackageInfo(context.packageName, 0).versionName})"
+            )
             if (error != null) {
                 Log.e("MainFragment", "Update check failed: $error")
                 return@checkAppUpdate
@@ -474,6 +512,8 @@ class MainFragment : BrowseSupportFragment() {
                 Log.d("MainFragment", "New update available: v$newVersion")
                 latestUpdateVersion = newVersion
                 latestUpdateApkUrl = apkUrl
+                latestUpdateTitle = releaseTitle
+                latestUpdateNotes = releaseNotes
 
                 activity?.runOnUiThread {
                     if (!isActive || !isAdded || isDetached) return@runOnUiThread
@@ -482,7 +522,7 @@ class MainFragment : BrowseSupportFragment() {
                     val prefs = context.getSharedPreferences("AppPrefs", Context.MODE_PRIVATE)
                     val downloadedVersion = prefs.getString("downloaded_update_version", null)
                     val localFile = java.io.File(context.externalCacheDir ?: context.cacheDir, "update.apk")
-                    
+
                     if (downloadedVersion == newVersion && localFile.exists()) {
                         isUpdateDownloaded = true
                     }
@@ -494,19 +534,136 @@ class MainFragment : BrowseSupportFragment() {
         }
     }
 
+    private fun showUpdateDialog() {
+        val activity = activity ?: return
+        val version = latestUpdateVersion
+        if (version == null || latestUpdateApkUrl == null) {
+            Toast.makeText(activity, "Update details not available yet.", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        if (updateDialog?.isShowing == true) {
+            refreshUpdateDialogUi()
+            return
+        }
+
+        val dialog = Dialog(activity)
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
+        dialog.setContentView(R.layout.dialog_update)
+        dialog.setCancelable(true)
+        dialog.setCanceledOnTouchOutside(false)
+
+        dialog.window?.setLayout(
+            (resources.displayMetrics.widthPixels * 0.62f).toInt().coerceIn(520, 900),
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        )
+        dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
+
+        val titleView = dialog.findViewById<TextView>(R.id.update_dialog_title)
+        val subtitleView = dialog.findViewById<TextView>(R.id.update_dialog_subtitle)
+        val notesView = dialog.findViewById<TextView>(R.id.update_dialog_notes)
+        updateProgressContainer = dialog.findViewById(R.id.update_progress_container)
+        updateProgressBar = dialog.findViewById(R.id.update_progress_bar)
+        updateProgressLabel = dialog.findViewById(R.id.update_progress_label)
+        updateProgressPercent = dialog.findViewById(R.id.update_progress_percent)
+        updateActionBtn = dialog.findViewById(R.id.update_btn_action)
+        updateCancelBtn = dialog.findViewById(R.id.update_btn_cancel)
+
+        titleView.text = latestUpdateTitle?.takeIf { it.isNotBlank() } ?: "Update available"
+        subtitleView.text = "v$version  →  current v${currentAppVersionName()}"
+        notesView.text = Utils.formatReleaseNotesForDisplay(latestUpdateNotes)
+
+        updateActionBtn?.setOnClickListener {
+            val ctx = context ?: return@setOnClickListener
+            when {
+                isUpdateDownloaded -> {
+                    installApk(ctx)
+                }
+                isUpdateDownloadInProgress -> {
+                    // no-op while downloading
+                }
+                else -> {
+                    latestUpdateApkUrl?.let { startUpdateDownload(ctx, it) }
+                        ?: Toast.makeText(ctx, "Update URL not found", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+
+        updateCancelBtn?.setOnClickListener {
+            if (isUpdateDownloadInProgress) {
+                cancelUpdateDownload()
+            } else {
+                dismissUpdateDialog()
+            }
+        }
+
+        dialog.setOnDismissListener {
+            // Keep download running in background; only clear UI refs.
+            if (updateDialog === dialog) {
+                clearUpdateDialogRefs()
+            }
+        }
+
+        updateDialog = dialog
+        refreshUpdateDialogUi()
+        if (isUpdateDownloadInProgress) {
+            handler.removeCallbacks(downloadProgressRunnable)
+            handler.post(downloadProgressRunnable)
+        }
+        dialog.show()
+        // Prefer primary action for D-pad focus on TV
+        updateActionBtn?.requestFocus()
+    }
+
+    private fun refreshUpdateDialogUi() {
+        if (updateDialog?.isShowing != true) return
+
+        when {
+            isUpdateDownloaded -> {
+                updateProgressContainer?.visibility = View.VISIBLE
+                updateProgressBar?.isIndeterminate = false
+                updateProgressBar?.progress = 100
+                updateProgressLabel?.text = "Download complete"
+                updateProgressPercent?.text = "100%"
+                updateActionBtn?.isEnabled = true
+                updateActionBtn?.text = "Install"
+                updateCancelBtn?.text = "Close"
+            }
+            isUpdateDownloadInProgress -> {
+                updateProgressContainer?.visibility = View.VISIBLE
+                updateActionBtn?.isEnabled = false
+                updateActionBtn?.text = "Downloading…"
+                updateCancelBtn?.text = "Cancel download"
+                if (updateProgressBar?.progress == 0) {
+                    updateProgressLabel?.text = "Starting download…"
+                    updateProgressPercent?.text = "0%"
+                }
+            }
+            else -> {
+                updateProgressContainer?.visibility = View.GONE
+                updateProgressBar?.progress = 0
+                updateProgressPercent?.text = "0%"
+                updateActionBtn?.isEnabled = true
+                updateActionBtn?.text = "Download"
+                updateCancelBtn?.text = "Cancel"
+            }
+        }
+    }
+
     private fun startUpdateDownload(context: Context, apkUrl: String) {
         if (isUpdateDownloadInProgress) {
             Toast.makeText(context, "Update download is already in progress.", Toast.LENGTH_SHORT).show()
             return
         }
         isUpdateDownloadInProgress = true
+        isUpdateDownloaded = false
 
         val localFile = java.io.File(context.externalCacheDir ?: context.cacheDir, "update.apk")
         if (localFile.exists()) {
             localFile.delete()
         }
-
-        Toast.makeText(context, "Downloading update... Installer will launch automatically when done.", Toast.LENGTH_LONG).show()
+        context.getSharedPreferences("AppPrefs", Context.MODE_PRIVATE)
+            .edit().remove("downloaded_update_version").apply()
 
         val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
         val request = DownloadManager.Request(Uri.parse(apkUrl))
@@ -516,12 +673,125 @@ class MainFragment : BrowseSupportFragment() {
             .setDestinationUri(Uri.fromFile(localFile))
 
         updateDownloadId = downloadManager.enqueue(request)
+        refreshUpdateDialogUi()
+        handler.removeCallbacks(downloadProgressRunnable)
+        handler.post(downloadProgressRunnable)
+    }
+
+    private fun cancelUpdateDownload() {
+        val ctx = context ?: return
+        if (updateDownloadId != -1L) {
+            try {
+                val dm = ctx.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+                dm.remove(updateDownloadId)
+            } catch (e: Exception) {
+                Log.w("MainFragment", "Failed to cancel download", e)
+            }
+        }
+        handler.removeCallbacks(downloadProgressRunnable)
+        updateDownloadId = -1L
+        isUpdateDownloadInProgress = false
+        isUpdateDownloaded = false
+
+        val localFile = java.io.File(ctx.externalCacheDir ?: ctx.cacheDir, "update.apk")
+        if (localFile.exists()) localFile.delete()
+        ctx.getSharedPreferences("AppPrefs", Context.MODE_PRIVATE)
+            .edit().remove("downloaded_update_version").apply()
+
+        Toast.makeText(ctx, "Download cancelled.", Toast.LENGTH_SHORT).show()
+        refreshUpdateDialogUi()
+    }
+
+    private fun queryAndUpdateDownloadProgress(context: Context) {
+        if (updateDownloadId == -1L) return
+        val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+        val cursor = dm.query(DownloadManager.Query().setFilterById(updateDownloadId)) ?: return
+        try {
+            if (!cursor.moveToFirst()) return
+            val statusIdx = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS)
+            val bytesIdx = cursor.getColumnIndex(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR)
+            val totalIdx = cursor.getColumnIndex(DownloadManager.COLUMN_TOTAL_SIZE_BYTES)
+            val status = if (statusIdx != -1) cursor.getInt(statusIdx) else -1
+            val downloaded = if (bytesIdx != -1) cursor.getLong(bytesIdx) else 0L
+            val total = if (totalIdx != -1) cursor.getLong(totalIdx) else -1L
+
+            when (status) {
+                DownloadManager.STATUS_RUNNING, DownloadManager.STATUS_PENDING -> {
+                    updateProgressContainer?.visibility = View.VISIBLE
+                    if (total > 0L) {
+                        val percent = ((downloaded * 100L) / total).toInt().coerceIn(0, 99)
+                        updateProgressBar?.isIndeterminate = false
+                        updateProgressBar?.progress = percent
+                        updateProgressPercent?.text = "$percent%"
+                        updateProgressLabel?.text = "Downloading… ${formatBytes(downloaded)} / ${formatBytes(total)}"
+                    } else {
+                        updateProgressBar?.isIndeterminate = true
+                        updateProgressPercent?.text = "…"
+                        updateProgressLabel?.text = "Downloading… ${formatBytes(downloaded)}"
+                    }
+                }
+                DownloadManager.STATUS_SUCCESSFUL -> {
+                    // Receiver also handles this; keep UI in sync if it fires first.
+                    isUpdateDownloaded = true
+                    isUpdateDownloadInProgress = false
+                    handler.removeCallbacks(downloadProgressRunnable)
+                    refreshUpdateDialogUi()
+                }
+                DownloadManager.STATUS_FAILED -> {
+                    isUpdateDownloadInProgress = false
+                    handler.removeCallbacks(downloadProgressRunnable)
+                    Toast.makeText(context, "Update download failed.", Toast.LENGTH_SHORT).show()
+                    refreshUpdateDialogUi()
+                }
+                DownloadManager.STATUS_PAUSED -> {
+                    updateProgressLabel?.text = "Download paused…"
+                }
+            }
+        } finally {
+            cursor.close()
+        }
+    }
+
+    private fun formatBytes(bytes: Long): String {
+        if (bytes < 1024) return "$bytes B"
+        val kb = bytes / 1024.0
+        if (kb < 1024) return String.format(Locale.US, "%.1f KB", kb)
+        val mb = kb / 1024.0
+        return String.format(Locale.US, "%.1f MB", mb)
+    }
+
+    private fun currentAppVersionName(): String {
+        return try {
+            requireContext().packageManager.getPackageInfo(requireContext().packageName, 0).versionName ?: "?"
+        } catch (e: Exception) {
+            "?"
+        }
+    }
+
+    private fun dismissUpdateDialog() {
+        try {
+            updateDialog?.dismiss()
+        } catch (_: Exception) {
+        }
+        clearUpdateDialogRefs()
+    }
+
+    private fun clearUpdateDialogRefs() {
+        updateDialog = null
+        updateActionBtn = null
+        updateCancelBtn = null
+        updateProgressContainer = null
+        updateProgressBar = null
+        updateProgressLabel = null
+        updateProgressPercent = null
     }
 
     private fun installApk(context: Context) {
         val localFile = java.io.File(context.externalCacheDir ?: context.cacheDir, "update.apk")
         if (!localFile.exists()) {
             Toast.makeText(context, "APK not found. Please download again.", Toast.LENGTH_SHORT).show()
+            isUpdateDownloaded = false
+            refreshUpdateDialogUi()
             return
         }
 

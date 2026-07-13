@@ -5,7 +5,7 @@
         <shape android:shape="rectangle">
             <corners android:radius="8dp"/>
             <solid android:color="#FFFFFF"/> <!-- White background when focused -->
-            <stroke android:width="2dp" android:color="#00E5FF"/> <!-- Bright cyan border -->
+            <stroke android:width="2dp" android:color="#BDBDBD"/> <!-- Grey focus border -->
         </shape>
     </item>
     <!-- Pressed state -->

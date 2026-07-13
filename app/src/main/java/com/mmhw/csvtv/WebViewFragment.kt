@@ -88,6 +88,26 @@ class WebViewFragment : Fragment() {
     private val keyResetHandler = Handler(Looper.getMainLooper())
     private val keyResetRunnable = Runnable { lastMoveKeyCode = -1 }
 
+    // When a non-browser WebView loads an embed page that fetches HLS, hand off to native player once.
+    private var handedOffToNativePlayer = false
+
+    // HTML5 video stall recovery (WebView has no ExoPlayer stall detector)
+    private val videoStallHandler = Handler(Looper.getMainLooper())
+    private var lastHtmlVideoTime = -1.0
+    private var htmlVideoStallTicks = 0
+    private var htmlVideoRecoverCount = 0
+    private val maxHtmlVideoRecovers = 6
+    private val htmlVideoStallIntervalMs = 3000L
+    private val htmlVideoStallThreshold = 4 // ~12s frozen
+    private val videoStallCheckRunnable = object : Runnable {
+        override fun run() {
+            checkHtmlVideoStall()
+            if (!isWebViewDestroyed && isAdded) {
+                videoStallHandler.postDelayed(this, htmlVideoStallIntervalMs)
+            }
+        }
+    }
+
 
     override fun onCreateView(
         inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
@@ -525,12 +545,23 @@ class WebViewFragment : Fragment() {
                 }
 
                 updateContentDimensions()
+                // Stream opened via WebView: keep HTML5 video alive (autoplay + stall recovery)
+                if (!isBrowserCard) {
+                    tryPlayHtmlVideo()
+                    startHtmlVideoStallMonitor()
+                }
             }
 
             override fun shouldOverrideUrlLoading(view: WebView?, request: android.webkit.WebResourceRequest?): Boolean {
                 val url = request?.url?.toString() ?: return false
                 val isRedirect = request.isRedirect
                 val hasGesture = request.hasGesture()
+
+                // Non-browser: navigating to a direct stream → native player (has reconnect)
+                if (!isBrowserCard && Utils.isVideoStream(url, null)) {
+                    handOffToNativePlayer(url)
+                    return true
+                }
 
                 // Allow initial page load redirections without alerts
                 if (!initialLoadCompleted) {
@@ -557,6 +588,15 @@ class WebViewFragment : Fragment() {
                 if (isAdUrl(url)) {
                     // Block ad resources (images, scripts, etc.)
                     return android.webkit.WebResourceResponse("text/plain", "utf-8", null)
+                }
+                // Non-browser: if the page fetches an HLS playlist, prefer native PlaybackFragment
+                // (ExoPlayer stall recovery) over a stuck HTML5/hls.js player.
+                if (!isBrowserCard && !handedOffToNativePlayer && isHlsPlaylistUrl(url)) {
+                    activity?.runOnUiThread {
+                        if (isAdded && !handedOffToNativePlayer) {
+                            handOffToNativePlayer(url)
+                        }
+                    }
                 }
                 return null
             }
@@ -799,6 +839,184 @@ class WebViewFragment : Fragment() {
             } else {
                 showToast("Requesting media fullscreen...")
             }
+        }
+    }
+
+    private fun isHlsPlaylistUrl(url: String): Boolean {
+        val lower = url.lowercase()
+        // Segment files (.ts) are not playlists — only hand off real playlists
+        if (lower.contains(".ts?") || lower.endsWith(".ts")) return false
+        return lower.contains(".m3u8") ||
+            lower.contains("application/vnd.apple.mpegurl") ||
+            lower.contains("application/x-mpegurl")
+    }
+
+    /**
+     * Replace WebView with native PlaybackFragment for direct stream URLs so
+     * ExoPlayer stall / live-edge recovery can run.
+     */
+    private fun handOffToNativePlayer(streamUrl: String) {
+        if (handedOffToNativePlayer || !isAdded || isWebViewDestroyed) return
+        if (isBrowserCard) return
+        handedOffToNativePlayer = true
+        stopHtmlVideoStallMonitor()
+        android.util.Log.i("WebViewFragment", "Handing off stream to native player: $streamUrl")
+        showToast("Opening stream in player…")
+
+        val fragment = PlaybackFragment().apply {
+            arguments = Bundle().apply {
+                putString("video_url", streamUrl)
+            }
+        }
+        val fm = parentFragmentManager
+        try {
+            // Drop the WebView back-stack entry, then open native player on top of browse.
+            if (!fm.isStateSaved && fm.backStackEntryCount > 0) {
+                fm.popBackStackImmediate()
+            }
+            fm.beginTransaction()
+                .replace(R.id.fragment_container, fragment)
+                .addToBackStack(null)
+                .commitAllowingStateLoss()
+        } catch (e: Exception) {
+            android.util.Log.e("WebViewFragment", "Hand-off failed", e)
+            handedOffToNativePlayer = false
+        }
+    }
+
+    private fun tryPlayHtmlVideo() {
+        if (isWebViewDestroyed || !isAdded) return
+        webView.evaluateJavascript(
+            """
+            (function() {
+                var v = document.querySelector('video');
+                if (!v) return 'none';
+                try { v.muted = false; v.play(); } catch(e) {}
+                return 'play';
+            })();
+            """.trimIndent(),
+            null
+        )
+    }
+
+    private fun startHtmlVideoStallMonitor() {
+        videoStallHandler.removeCallbacks(videoStallCheckRunnable)
+        lastHtmlVideoTime = -1.0
+        htmlVideoStallTicks = 0
+        videoStallHandler.postDelayed(videoStallCheckRunnable, htmlVideoStallIntervalMs)
+    }
+
+    private fun stopHtmlVideoStallMonitor() {
+        videoStallHandler.removeCallbacks(videoStallCheckRunnable)
+    }
+
+    private fun checkHtmlVideoStall() {
+        if (isWebViewDestroyed || !isAdded || handedOffToNativePlayer) return
+        webView.evaluateJavascript(
+            """
+            (function() {
+                var v = document.querySelector('video');
+                if (!v) return JSON.stringify({found:false});
+                return JSON.stringify({
+                    found:true,
+                    t: v.currentTime || 0,
+                    paused: !!v.paused,
+                    ended: !!v.ended,
+                    rs: v.readyState || 0,
+                    net: v.networkState || 0,
+                    err: (v.error && v.error.code) ? v.error.code : 0,
+                    seeking: !!v.seeking
+                });
+            })();
+            """.trimIndent()
+        ) { raw ->
+            if (isWebViewDestroyed || !isAdded || handedOffToNativePlayer) return@evaluateJavascript
+            try {
+                if (raw.isNullOrBlank() || raw == "null") return@evaluateJavascript
+                // evaluateJavascript returns a JSON-encoded string; unwrap to object text
+                val jsonStr = when {
+                    raw.startsWith("\"") -> org.json.JSONTokener(raw).nextValue() as? String ?: return@evaluateJavascript
+                    else -> raw
+                }
+                val json = JSONObject(jsonStr)
+                if (!json.optBoolean("found", false)) {
+                    htmlVideoStallTicks = 0
+                    return@evaluateJavascript
+                }
+
+                val t = json.optDouble("t", 0.0)
+                val paused = json.optBoolean("paused", false)
+                val ended = json.optBoolean("ended", false)
+                val err = json.optInt("err", 0)
+                val readyState = json.optInt("rs", 0)
+                val seeking = json.optBoolean("seeking", false)
+
+                // User paused intentionally — don't thrash
+                if (paused && err == 0 && !ended) {
+                    lastHtmlVideoTime = t
+                    htmlVideoStallTicks = 0
+                    return@evaluateJavascript
+                }
+
+                val timeStuck = lastHtmlVideoTime >= 0 && kotlin.math.abs(t - lastHtmlVideoTime) < 0.15
+                val waiting = readyState < 2 || seeking
+                val bad = err != 0 || ended || (timeStuck && !seeking)
+
+                if (bad || (timeStuck && waiting)) {
+                    htmlVideoStallTicks++
+                    android.util.Log.d(
+                        "WebViewFragment",
+                        "HTML video stall tick $htmlVideoStallTicks/$htmlVideoStallThreshold " +
+                            "(t=$t err=$err ended=$ended rs=$readyState)"
+                    )
+                    if (htmlVideoStallTicks >= htmlVideoStallThreshold) {
+                        recoverHtmlVideo()
+                        htmlVideoStallTicks = 0
+                    }
+                } else {
+                    htmlVideoStallTicks = 0
+                }
+                lastHtmlVideoTime = t
+            } catch (e: Exception) {
+                android.util.Log.w("WebViewFragment", "Stall check parse failed: $raw", e)
+            }
+        }
+    }
+
+    private fun recoverHtmlVideo() {
+        if (htmlVideoRecoverCount >= maxHtmlVideoRecovers) {
+            android.util.Log.w("WebViewFragment", "HTML video recover budget exhausted")
+            showToast("Stream stalled. Leaving player…")
+            stopHtmlVideoStallMonitor()
+            if (isAdded) parentFragmentManager.popBackStack()
+            return
+        }
+        htmlVideoRecoverCount++
+        showToast("Stream stalled — reconnecting… ($htmlVideoRecoverCount/$maxHtmlVideoRecovers)")
+        android.util.Log.i("WebViewFragment", "Recovering HTML video ($htmlVideoRecoverCount/$maxHtmlVideoRecovers)")
+
+        // Soft recover: reload media element first; every other attempt full page reload
+        if (htmlVideoRecoverCount % 2 == 1) {
+            webView.evaluateJavascript(
+                """
+                (function() {
+                    var v = document.querySelector('video');
+                    if (!v) return 'none';
+                    try {
+                        var src = v.currentSrc || v.src;
+                        v.pause();
+                        if (src) { v.src = src; }
+                        v.load();
+                        var p = v.play();
+                        if (p && p.catch) p.catch(function(){});
+                        return 'reloaded';
+                    } catch(e) { return 'err:' + e; }
+                })();
+                """.trimIndent(),
+                null
+            )
+        } else {
+            webView.reload()
         }
     }
 
@@ -1412,11 +1630,13 @@ class WebViewFragment : Fragment() {
 
     override fun onDestroyView() {
         isWebViewDestroyed = true
+        stopHtmlVideoStallMonitor()
         super.onDestroyView()
         pointerHideHandler.removeCallbacksAndMessages(null)
         keyResetHandler.removeCallbacksAndMessages(null)
         jsHandler.removeCallbacksAndMessages(null)
         clickHandler.removeCallbacksAndMessages(null)
+        videoStallHandler.removeCallbacksAndMessages(null)
 
         if (isInFullscreen) {
             webView.webChromeClient?.onHideCustomView()

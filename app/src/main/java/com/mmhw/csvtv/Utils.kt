@@ -170,14 +170,37 @@ object Utils {
         }
     }
 
+    /**
+     * True for IPTV/gateway URLs that usually serve HLS/TS even when the path has no .m3u8
+     * (e.g. `…/163189.php?id=viu`). Prefer native [PlaybackFragment] for these over WebView.
+     */
+    fun looksLikeIptvStreamUrl(url: String?): Boolean {
+        if (url.isNullOrBlank()) return false
+        val lower = url.trim().lowercase()
+        if (lower.startsWith("rtmp://")) return true
+        if (lower.contains(".m3u8")) return true
+        if (lower.endsWith(".mp4") || lower.contains(".mp4?")) return true
+        if (lower.endsWith(".ts") || lower.contains(".ts?")) return true
+        if (lower.contains("/live") || lower.contains("playlist")) return true
+        // Common IPTV gateway shapes (php?id=…, streaming proxies)
+        if (lower.contains(".php") && (lower.contains("id=") || lower.contains("channel") || lower.contains("stream"))) {
+            return true
+        }
+        if (lower.contains("get.php") || lower.contains("live.php") || lower.contains("play.php")) return true
+        return false
+    }
+
     fun isVideoStream(url: String, contentType: String?): Boolean {
         val normalizedUrl = url.trim().lowercase()
-        // Check for common video file extensions in the URL itself
+        // Check for common video file extensions / stream URL shapes
         if (normalizedUrl.endsWith(".mp4") ||
             normalizedUrl.endsWith(".m3u8") ||
             normalizedUrl.endsWith(".ts") ||
             normalizedUrl.startsWith("rtmp://") ||
-            normalizedUrl.contains(".m3u8?")) {
+            normalizedUrl.contains(".m3u8?") ||
+            normalizedUrl.contains(".mp4?") ||
+            looksLikeIptvStreamUrl(normalizedUrl)
+        ) {
             return true
         }
 
@@ -187,7 +210,10 @@ object Utils {
                     it.contains("audio/") || // Audio content type (for radio/music channels)
                     it.contains("application/x-mpegurl") || // M3U8 specific content type
                     it.contains("application/vnd.apple.mpegurl") || // Another M3U8 specific content type
-                    it.contains("application/octet-stream") // Octet-stream is highly likely raw video stream (like TS)
+                    it.contains("application/dash+xml") ||
+                    it.contains("application/octet-stream") || // Octet-stream is highly likely raw video stream (like TS)
+                    // Some gateways mislabel HLS as text/plain
+                    (it.contains("text/plain") && looksLikeIptvStreamUrl(url))
         }
         return false
     }
@@ -475,8 +501,9 @@ object Utils {
                         val parsedResolution = parseResolution(responseBody)
                         val isAudio = determinedContentType?.startsWith("audio/", ignoreCase = true) == true
 
-                        // Detect common cases where a stream URL actually redirects to a web page / error page
-                        val looksLikeHtmlPage = responseBody?.let { body ->
+                        // Detect common cases where a stream URL actually redirects to a web page / error page.
+                        // Do not treat as HTML if body is clearly an HLS playlist.
+                        val looksLikeHtmlPage = !isStreamBasedOnBody && responseBody?.let { body ->
                             val lower = body.lowercase()
                             lower.contains("<html") ||
                             lower.contains("<!doctype") ||
@@ -491,13 +518,25 @@ object Utils {
                             lower.contains("blocked")
                         } ?: false
 
-                        val isRecognizedVideoStream = isStreamBasedOnBody || isVideoStream(finalResolvedUrl, determinedContentType)
+                        // IPTV gateways (php?id=) often return intermittent HTML errors; still mark as stream
+                        // so the native player can try (and recover) instead of opening a WebView player page.
+                        val isRecognizedVideoStream = isStreamBasedOnBody ||
+                            isVideoStream(finalResolvedUrl, determinedContentType) ||
+                            (looksLikeIptvStreamUrl(finalResolvedUrl) && !looksLikeHtmlPage)
 
-                        Log.d("Utils", "GET response for $resolvedUrl -> Final Content-Type: $determinedContentType, Is stream: $isStreamBasedOnBody, Is HTML: $looksLikeHtmlPage, HTTP Status: ${getResponse.code}")
+                        Log.d(
+                            "Utils",
+                            "GET response for $resolvedUrl -> Final Content-Type: $determinedContentType, " +
+                                "Is stream: $isStreamBasedOnBody, Is HTML: $looksLikeHtmlPage, " +
+                                "iptvLike=${looksLikeIptvStreamUrl(finalResolvedUrl)}, HTTP Status: ${getResponse.code}"
+                        )
 
                         val finalError = if (!isRecognizedVideoStream) {
                             when {
-                                looksLikeHtmlPage -> "Resolved to web page instead of video stream (likely error/login/blocked page)"
+                                looksLikeHtmlPage && !looksLikeIptvStreamUrl(finalResolvedUrl) ->
+                                    "Resolved to web page instead of video stream (likely error/login/blocked page)"
+                                // IPTV-like URL that landed on HTML: no hard error — caller may still try native
+                                looksLikeHtmlPage && looksLikeIptvStreamUrl(finalResolvedUrl) -> null
                                 !getResponse.isSuccessful -> "Content at resolved URL not successfully loaded: HTTP ${getResponse.code}"
                                 else -> "URL did not resolve to a recognizable video or audio stream"
                             }
@@ -532,25 +571,40 @@ object Utils {
         }
     }
 
-    fun checkAppUpdate(context: Context, callback: (newVersionName: String?, apkUrl: String?, error: String?) -> Unit) {
+    /**
+     * Checks GitHub latest release. On success with a newer version:
+     * callback(version, apkUrl, releaseTitle, releaseNotes, null).
+     * releaseTitle/notes may be blank if the release omitted them.
+     */
+    fun checkAppUpdate(
+        context: Context,
+        callback: (
+            newVersionName: String?,
+            apkUrl: String?,
+            releaseTitle: String?,
+            releaseNotes: String?,
+            error: String?
+        ) -> Unit
+    ) {
         val request = Request.Builder()
             .url("https://api.github.com/repos/mingminghome/android-csv-tv/releases/latest")
+            .header("Accept", "application/vnd.github+json")
             .build()
 
         client.newCall(request).enqueue(object : okhttp3.Callback {
             override fun onFailure(call: okhttp3.Call, e: IOException) {
-                callback(null, null, e.message)
+                callback(null, null, null, null, e.message)
             }
 
             override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
                 if (!response.isSuccessful) {
-                    callback(null, null, "Server error: ${response.code}")
+                    callback(null, null, null, null, "Server error: ${response.code}")
                     return
                 }
 
                 val bodyString = response.body?.string()
                 if (bodyString.isNullOrBlank()) {
-                    callback(null, null, "Response body is empty")
+                    callback(null, null, null, null, "Response body is empty")
                     return
                 }
 
@@ -558,7 +612,7 @@ object Utils {
                     val json = org.json.JSONObject(bodyString)
                     val tagName = json.optString("tag_name", "")
                     if (tagName.isBlank()) {
-                        callback(null, null, "No tag_name in release")
+                        callback(null, null, null, null, "No tag_name in release")
                         return
                     }
 
@@ -570,6 +624,9 @@ object Utils {
                     // Get current version name
                     val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
                     val currentVersionName = packageInfo.versionName ?: "1.2.0"
+
+                    val releaseTitle = json.optString("name", "").ifBlank { "v$latestVersionName" }
+                    val releaseNotes = json.optString("body", "").trim().ifBlank { null }
 
                     Log.d("Utils", "Update check: current=$currentVersionName, latestFromTag=$latestVersionName (from tag=$tagName)")
 
@@ -591,19 +648,33 @@ object Utils {
                             }
                         }
                         if (apkUrl != null) {
-                            callback(latestVersionName, apkUrl, null)
+                            callback(latestVersionName, apkUrl, releaseTitle, releaseNotes, null)
                         } else {
-                            callback(null, null, "No APK asset found in latest release")
+                            callback(null, null, null, null, "No APK asset found in latest release")
                         }
                     } else {
                         // Current version is up to date
-                        callback(null, null, null)
+                        callback(null, null, null, null, null)
                     }
                 } catch (e: Exception) {
-                    callback(null, null, "Failed to parse release info: ${e.message}")
+                    callback(null, null, null, null, "Failed to parse release info: ${e.message}")
                 }
             }
         })
+    }
+
+    /** Light markdown cleanup for plain TextView release notes on TV. */
+    fun formatReleaseNotesForDisplay(raw: String?): String {
+        if (raw.isNullOrBlank()) return "No release notes available."
+        return raw
+            .replace("\r\n", "\n")
+            .replace(Regex("^#{1,6}\\s*", RegexOption.MULTILINE), "")
+            .replace(Regex("\\*\\*(.+?)\\*\\*"), "$1")
+            .replace(Regex("__(.+?)__"), "$1")
+            .replace(Regex("`([^`]+)`"), "$1")
+            .replace(Regex("^\\s*[-*]\\s+", RegexOption.MULTILINE), "• ")
+            .replace(Regex("\\[([^]]+)]\\([^)]+\\)"), "$1")
+            .trim()
     }
 
     fun isNewerVersion(current: String, latest: String): Boolean {
