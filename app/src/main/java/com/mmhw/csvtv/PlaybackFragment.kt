@@ -15,6 +15,7 @@ import android.widget.ImageView
 import android.widget.ProgressBar
 import android.widget.RelativeLayout
 import android.widget.TextView
+import androidx.activity.OnBackPressedCallback
 import androidx.fragment.app.Fragment
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
@@ -108,11 +109,20 @@ class PlaybackFragment : Fragment() {
     private var consecutiveStallRestarts = 0
     private val maxStallRestartsBeforeFullReinit = 2
 
-    // Stall detector: recovers when video freezes or buffers infinitely
+    // Stall detector: recovers when video freezes or buffers infinitely.
+    // Balanced middle: reconnect faster than the old ~20s wait, but avoid thrashing on
+    // live-edge micro-freezes (separate counters + stricter frozen criteria).
     private var lastVideoPosition: Long = 0
-    private var stallChecksWithoutProgress = 0
-    private val STALL_CHECK_INTERVAL_MS = 2500L
-    private val STALL_THRESHOLD = 8 // ~20s of no progress (less thrashy on 4K live)
+    private var bufferingStallChecks = 0
+    private var frozenStallChecks = 0
+    private var didShowBufferingHint = false
+    private val STALL_CHECK_INTERVAL_MS = 2000L
+    /** ~10s continuous BUFFERING before soft reconnect. */
+    private val BUFFERING_STALL_THRESHOLD = 5
+    /** ~14s true freeze (not live-edge jitter) before full reinit. */
+    private val FROZEN_STALL_THRESHOLD = 7
+    /** Show soft "Buffering…" after ~4s so the UI does not look dead. */
+    private val BUFFERING_STATUS_HINT_AFTER = 2
     private val stallCheckRunnable = Runnable { checkForVideoStall() }
 
     companion object {
@@ -159,6 +169,29 @@ class PlaybackFragment : Fragment() {
 
         playerView?.useController = false
         playerView?.keepScreenOn = true
+
+        // Single Back → main browse (do not require hiding controller first).
+        // Aligns with WebView root Back / Close and Settings Close path.
+        requireActivity().onBackPressedDispatcher.addCallback(
+            viewLifecycleOwner,
+            object : OnBackPressedCallback(true) {
+                override fun handleOnBackPressed() {
+                    if (!isAdded) return
+                    try {
+                        if (parentFragmentManager.backStackEntryCount > 0 &&
+                            !parentFragmentManager.isStateSaved
+                        ) {
+                            parentFragmentManager.popBackStack()
+                        } else {
+                            isEnabled = false
+                            requireActivity().onBackPressedDispatcher.onBackPressed()
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Back to main failed", e)
+                    }
+                }
+            }
+        )
 
         configureBuffersForDevice()
         isEmulator = isRunningOnEmulator()
@@ -1107,23 +1140,35 @@ class PlaybackFragment : Fragment() {
     private fun restartPlayer(fullReinit: Boolean = false) {
         handler.removeCallbacks(stallCheckRunnable)
         val p = player
+        val urlToPlay = resolvedUrl
+        val mimeType = arguments?.getString("mime_type")
+        val format = urlToPlay?.let { Utils.determineVideoFormat(it, mimeType) }
+        val isLikelyLive = urlToPlay != null && isLikelyLiveStream(urlToPlay, format, mimeType)
+
+        // Live/IPTV: always rejoin edge after a stall (stale offsets cause long BUFFERING).
+        if (isLikelyLive || p?.isCurrentMediaItemLive == true) {
+            playbackPosition = 0L
+        }
 
         if (!isShowingStatus) {
             showStatus("Reconnecting stream…")
         }
+
+        resetStallCounters()
 
         if (fullReinit || p == null || consecutiveStallRestarts >= maxStallRestartsBeforeFullReinit) {
             consecutiveStallRestarts = 0
             isStallRestarting = true
             releasePlayerSafely()
             currentSurface = null
-            resolvedUrl?.let { initializePlayer(it) }
+            urlToPlay?.let { initializePlayer(it) }
             return
         }
 
-        playbackPosition = p.currentPosition
+        if (!isLikelyLive && p.isCurrentMediaItemLive != true) {
+            playbackPosition = p.currentPosition
+        }
         lastVideoPosition = 0
-        stallChecksWithoutProgress = 0
         isStallRestarting = true
         consecutiveStallRestarts++
 
@@ -1131,10 +1176,7 @@ class PlaybackFragment : Fragment() {
             p.stop()
             p.clearMediaItems()
 
-            val urlToPlay = resolvedUrl ?: return
-            val mimeType = arguments?.getString("mime_type")
-            val format = Utils.determineVideoFormat(urlToPlay, mimeType)
-            val isLikelyLive = isLikelyLiveStream(urlToPlay, format, mimeType)
+            if (urlToPlay == null) return
             val mediaItem = MediaItem.Builder()
                 .setUri(urlToPlay)
                 .apply {
@@ -1171,7 +1213,7 @@ class PlaybackFragment : Fragment() {
             Log.e(TAG, "Lightweight restart failed, doing full reinit", e)
             releasePlayerSafely()
             currentSurface = null
-            resolvedUrl?.let { initializePlayer(it) }
+            urlToPlay?.let { initializePlayer(it) }
         }
     }
 
@@ -1314,7 +1356,7 @@ class PlaybackFragment : Fragment() {
         resolvedUrl = null
         currentMediaItem = null
         lastVideoPosition = 0
-        stallChecksWithoutProgress = 0
+        resetStallCounters()
         isStallRestarting = false
         isShowingFatalError = false
         isShowingStatus = false
@@ -1329,10 +1371,16 @@ class PlaybackFragment : Fragment() {
         Log.d(TAG, "onDestroyView: Player released and views nullified")
     }
 
+    private fun resetStallCounters() {
+        bufferingStallChecks = 0
+        frozenStallChecks = 0
+        didShowBufferingHint = false
+    }
+
     private fun startStallDetection() {
         handler.removeCallbacks(stallCheckRunnable)
         lastVideoPosition = player?.currentPosition ?: 0
-        stallChecksWithoutProgress = 0
+        resetStallCounters()
         handler.postDelayed(stallCheckRunnable, STALL_CHECK_INTERVAL_MS)
     }
 
@@ -1345,7 +1393,7 @@ class PlaybackFragment : Fragment() {
     private fun checkForVideoStall() {
         val p = player
         if (p == null || !p.playWhenReady) {
-            stallChecksWithoutProgress = 0
+            resetStallCounters()
             handler.postDelayed(stallCheckRunnable, STALL_CHECK_INTERVAL_MS)
             return
         }
@@ -1360,9 +1408,21 @@ class PlaybackFragment : Fragment() {
         val state = p.playbackState
 
         if (state == Player.STATE_BUFFERING) {
-            stallChecksWithoutProgress++
-            Log.d(TAG, "Stall check: buffering ($stallChecksWithoutProgress/$STALL_THRESHOLD)")
-            if (stallChecksWithoutProgress >= STALL_THRESHOLD) {
+            // Do not carry frozen ticks into buffering — separate failure modes.
+            frozenStallChecks = 0
+            bufferingStallChecks++
+            Log.d(
+                TAG,
+                "Stall check: buffering ($bufferingStallChecks/$BUFFERING_STALL_THRESHOLD)"
+            )
+            if (!didShowBufferingHint &&
+                bufferingStallChecks >= BUFFERING_STATUS_HINT_AFTER &&
+                !isShowingStatus
+            ) {
+                didShowBufferingHint = true
+                showStatus("Buffering…")
+            }
+            if (bufferingStallChecks >= BUFFERING_STALL_THRESHOLD) {
                 Log.w(TAG, "Video stalled (buffering timeout). Restarting player.")
                 showStatus("Stream stalled — reconnecting…")
                 // Soft re-prepare first; full re-init after repeated stalls (restartPlayer counts).
@@ -1370,26 +1430,34 @@ class PlaybackFragment : Fragment() {
                 return
             }
         } else if (state == Player.STATE_READY) {
+            bufferingStallChecks = 0
+            didShowBufferingHint = false
             val advanced = currentPos - lastVideoPosition
-            // Live streams can sit at a fixed edge position while still "playing";
-            // also treat no-advance while isPlaying=false as a stall.
+            // Live edge often reports a fixed position while frames still advance.
+            // Only treat as frozen when playhead is stuck AND we look starved / not playing.
             val notAdvancing = advanced < 100 && currentPos > 0
-            val frozenWhilePlaying = notAdvancing && (p.isPlaying || p.playWhenReady)
-            if (frozenWhilePlaying) {
-                stallChecksWithoutProgress++
-                Log.d(TAG, "Stall check: frozen position ($stallChecksWithoutProgress/$STALL_THRESHOLD)")
-                if (stallChecksWithoutProgress >= STALL_THRESHOLD) {
+            val bufferedAhead = (p.bufferedPosition - currentPos).coerceAtLeast(0L)
+            val starving = bufferedAhead < 750L
+            val trulyFrozen = notAdvancing && (!p.isPlaying || starving)
+            if (trulyFrozen) {
+                frozenStallChecks++
+                Log.d(
+                    TAG,
+                    "Stall check: frozen position ($frozenStallChecks/$FROZEN_STALL_THRESHOLD) " +
+                        "isPlaying=${p.isPlaying} bufferedAhead=${bufferedAhead}ms"
+                )
+                if (frozenStallChecks >= FROZEN_STALL_THRESHOLD) {
                     Log.w(TAG, "Video stalled (decoder frozen). Restarting player.")
                     showStatus("Video frozen — recovering…")
                     restartPlayer(fullReinit = true)
                     return
                 }
-            } else if (advanced >= 100) {
-                stallChecksWithoutProgress = 0
+            } else if (advanced >= 100 || p.isPlaying) {
+                frozenStallChecks = 0
             }
         } else if (state == Player.STATE_IDLE || state == Player.STATE_ENDED) {
-            // Recovery path owns these states; don't thrash stall counter
-            stallChecksWithoutProgress = 0
+            // Recovery path owns these states; don't thrash stall counters
+            resetStallCounters()
         }
 
         lastVideoPosition = currentPos

@@ -6,9 +6,12 @@ import android.content.Context
 import android.content.IntentFilter
 import android.app.DownloadManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.util.Log
 import android.view.View
 import android.view.ViewGroup
@@ -17,6 +20,7 @@ import android.widget.Button
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
+import androidx.core.content.FileProvider
 import androidx.fragment.app.FragmentManager
 import androidx.leanback.app.BrowseSupportFragment
 import androidx.leanback.widget.ArrayObjectAdapter
@@ -25,6 +29,7 @@ import androidx.leanback.widget.ListRow
 import androidx.leanback.widget.ListRowPresenter
 import androidx.leanback.widget.OnItemViewClickedListener
 import androidx.leanback.widget.OnItemViewSelectedListener
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -76,15 +81,7 @@ class MainFragment : BrowseSupportFragment() {
                         val statusIdx = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS)
                         val status = if (statusIdx != -1) cursor.getInt(statusIdx) else -1
                         if (status == DownloadManager.STATUS_SUCCESSFUL) {
-                            isUpdateDownloaded = true
-                            isUpdateDownloadInProgress = false
-                            Log.d("MainFragment", "Update download completed successfully.")
-                            latestUpdateVersion?.let { version ->
-                                ctx.getSharedPreferences("AppPrefs", Context.MODE_PRIVATE)
-                                    .edit().putString("downloaded_update_version", version).apply()
-                            }
-                            refreshUpdateDialogUi()
-                            Toast.makeText(ctx, "Download complete. Tap Install to continue.", Toast.LENGTH_LONG).show()
+                            onUpdateDownloadSucceeded(ctx, autoInstall = true)
                         } else {
                             isUpdateDownloadInProgress = false
                             val reasonIdx = cursor.getColumnIndex(DownloadManager.COLUMN_REASON)
@@ -130,10 +127,17 @@ class MainFragment : BrowseSupportFragment() {
         loadData()
         
         try {
-            requireContext().registerReceiver(
-                onDownloadCompleteReceiver,
-                IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE)
-            )
+            // API 33+ requires an explicit export flag; system DOWNLOAD_COMPLETE needs EXPORTED.
+            val filter = IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                requireContext().registerReceiver(
+                    onDownloadCompleteReceiver,
+                    filter,
+                    Context.RECEIVER_EXPORTED
+                )
+            } else {
+                requireContext().registerReceiver(onDownloadCompleteReceiver, filter)
+            }
         } catch (e: Exception) {
             Log.e("MainFragment", "Failed to register download receiver", e)
         }
@@ -195,9 +199,8 @@ class MainFragment : BrowseSupportFragment() {
                 // Pop all fragments from the back stack to destroy any open WebView or PlaybackFragment.
                 parentFragmentManager.popBackStack(null, FragmentManager.POP_BACK_STACK_INCLUSIVE)
 
-                // Start the Setup activity.
-                val intent = Intent(requireContext(), SetupActivity::class.java)
-                startActivity(intent)
+                // Settings mode (CSV already configured when user is on main browse).
+                startActivity(SetupActivity.createIntent(requireContext(), initMode = false))
 
                 // Finish the current MainActivity to ensure a clean start after setup is complete.
                 requireActivity().finish()
@@ -518,13 +521,18 @@ class MainFragment : BrowseSupportFragment() {
                 activity?.runOnUiThread {
                     if (!isActive || !isAdded || isDetached) return@runOnUiThread
 
-                    // Verify if it is already downloaded
+                    // Verify if the *same* target version is already on disk (cross-version safe).
                     val prefs = context.getSharedPreferences("AppPrefs", Context.MODE_PRIVATE)
                     val downloadedVersion = prefs.getString("downloaded_update_version", null)
-                    val localFile = java.io.File(context.externalCacheDir ?: context.cacheDir, "update.apk")
+                    val localFile = updateApkFile(context)
 
-                    if (downloadedVersion == newVersion && localFile.exists()) {
+                    if (downloadedVersion == newVersion && localFile.exists() && localFile.length() > 0L) {
                         isUpdateDownloaded = true
+                    } else if (localFile.exists() && downloadedVersion != newVersion) {
+                        // Stale APK from an older update target — discard so 1.0.4→1.0.6 re-downloads.
+                        localFile.delete()
+                        prefs.edit().remove("downloaded_update_version").apply()
+                        isUpdateDownloaded = false
                     }
 
                     // Update Settings Row to show the update card (placed before Browser card)
@@ -650,6 +658,18 @@ class MainFragment : BrowseSupportFragment() {
         }
     }
 
+    /**
+     * Single on-disk path for APK updates. Must match DownloadManager destination and FileProvider.
+     * Prefer app external files (no storage permission) over fragile file:// cache URIs.
+     */
+    private fun updateApkFile(context: Context): File {
+        val dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+            ?: context.externalCacheDir
+            ?: context.cacheDir
+        if (!dir.exists()) dir.mkdirs()
+        return File(dir, "update.apk")
+    }
+
     private fun startUpdateDownload(context: Context, apkUrl: String) {
         if (isUpdateDownloadInProgress) {
             Toast.makeText(context, "Update download is already in progress.", Toast.LENGTH_SHORT).show()
@@ -658,7 +678,7 @@ class MainFragment : BrowseSupportFragment() {
         isUpdateDownloadInProgress = true
         isUpdateDownloaded = false
 
-        val localFile = java.io.File(context.externalCacheDir ?: context.cacheDir, "update.apk")
+        val localFile = updateApkFile(context)
         if (localFile.exists()) {
             localFile.delete()
         }
@@ -666,13 +686,30 @@ class MainFragment : BrowseSupportFragment() {
             .edit().remove("downloaded_update_version").apply()
 
         val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+        // setDestinationInExternalFilesDir is reliable on modern Android; file:// cache URIs often fail.
         val request = DownloadManager.Request(Uri.parse(apkUrl))
             .setTitle("CSV TV Update")
             .setDescription("Downloading version $latestUpdateVersion")
             .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE)
-            .setDestinationUri(Uri.fromFile(localFile))
+            .setAllowedOverMetered(true)
+            .setAllowedOverRoaming(true)
+            .setMimeType("application/vnd.android.package-archive")
+            .setDestinationInExternalFilesDir(
+                context,
+                Environment.DIRECTORY_DOWNLOADS,
+                "update.apk"
+            )
 
-        updateDownloadId = downloadManager.enqueue(request)
+        try {
+            updateDownloadId = downloadManager.enqueue(request)
+            Log.d("MainFragment", "Update download enqueued id=$updateDownloadId url=$apkUrl dest=${localFile.absolutePath}")
+        } catch (e: Exception) {
+            isUpdateDownloadInProgress = false
+            Log.e("MainFragment", "Failed to enqueue update download", e)
+            Toast.makeText(context, "Failed to start download: ${e.message}", Toast.LENGTH_LONG).show()
+            refreshUpdateDialogUi()
+            return
+        }
         refreshUpdateDialogUi()
         handler.removeCallbacks(downloadProgressRunnable)
         handler.post(downloadProgressRunnable)
@@ -693,13 +730,55 @@ class MainFragment : BrowseSupportFragment() {
         isUpdateDownloadInProgress = false
         isUpdateDownloaded = false
 
-        val localFile = java.io.File(ctx.externalCacheDir ?: ctx.cacheDir, "update.apk")
+        val localFile = updateApkFile(ctx)
         if (localFile.exists()) localFile.delete()
         ctx.getSharedPreferences("AppPrefs", Context.MODE_PRIVATE)
             .edit().remove("downloaded_update_version").apply()
 
         Toast.makeText(ctx, "Download cancelled.", Toast.LENGTH_SHORT).show()
         refreshUpdateDialogUi()
+    }
+
+    /** Shared success path for broadcast + progress poll (cross-version safe). */
+    private fun onUpdateDownloadSucceeded(context: Context, autoInstall: Boolean) {
+        // Broadcast and progress poll may both fire — only run the success UI/install once.
+        val firstSuccess = !isUpdateDownloaded
+        isUpdateDownloaded = true
+        isUpdateDownloadInProgress = false
+        handler.removeCallbacks(downloadProgressRunnable)
+
+        val file = updateApkFile(context)
+        val size = if (file.exists()) file.length() else 0L
+        Log.d(
+            "MainFragment",
+            "Update download completed: version=$latestUpdateVersion path=${file.absolutePath} " +
+                "size=$size firstSuccess=$firstSuccess"
+        )
+
+        if (!file.exists() || size <= 0L) {
+            isUpdateDownloaded = false
+            Toast.makeText(context, "Download finished but APK is missing. Try again.", Toast.LENGTH_LONG).show()
+            refreshUpdateDialogUi()
+            return
+        }
+
+        latestUpdateVersion?.let { version ->
+            context.getSharedPreferences("AppPrefs", Context.MODE_PRIVATE)
+                .edit().putString("downloaded_update_version", version).apply()
+        }
+        refreshUpdateDialogUi()
+
+        if (!firstSuccess) return
+
+        if (autoInstall) {
+            Toast.makeText(context, "Download complete. Starting install…", Toast.LENGTH_SHORT).show()
+            // Slight delay so the dialog can paint "Install" before the system installer opens.
+            handler.postDelayed({
+                if (isAdded && !isDetached) installApk(context)
+            }, 400L)
+        } else {
+            Toast.makeText(context, "Download complete. Tap Install to continue.", Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun queryAndUpdateDownloadProgress(context: Context) {
@@ -731,16 +810,18 @@ class MainFragment : BrowseSupportFragment() {
                     }
                 }
                 DownloadManager.STATUS_SUCCESSFUL -> {
-                    // Receiver also handles this; keep UI in sync if it fires first.
-                    isUpdateDownloaded = true
-                    isUpdateDownloadInProgress = false
-                    handler.removeCallbacks(downloadProgressRunnable)
-                    refreshUpdateDialogUi()
+                    // Receiver may also fire; only run success once.
+                    if (!isUpdateDownloaded) {
+                        onUpdateDownloadSucceeded(context, autoInstall = true)
+                    }
                 }
                 DownloadManager.STATUS_FAILED -> {
                     isUpdateDownloadInProgress = false
                     handler.removeCallbacks(downloadProgressRunnable)
-                    Toast.makeText(context, "Update download failed.", Toast.LENGTH_SHORT).show()
+                    val reasonIdx = cursor.getColumnIndex(DownloadManager.COLUMN_REASON)
+                    val reason = if (reasonIdx != -1) cursor.getInt(reasonIdx) else -1
+                    Log.e("MainFragment", "Update download failed. reason=$reason")
+                    Toast.makeText(context, "Update download failed (code $reason).", Toast.LENGTH_SHORT).show()
                     refreshUpdateDialogUi()
                 }
                 DownloadManager.STATUS_PAUSED -> {
@@ -787,27 +868,74 @@ class MainFragment : BrowseSupportFragment() {
     }
 
     private fun installApk(context: Context) {
-        val localFile = java.io.File(context.externalCacheDir ?: context.cacheDir, "update.apk")
-        if (!localFile.exists()) {
+        val localFile = updateApkFile(context)
+        if (!localFile.exists() || localFile.length() <= 0L) {
             Toast.makeText(context, "APK not found. Please download again.", Toast.LENGTH_SHORT).show()
             isUpdateDownloaded = false
+            context.getSharedPreferences("AppPrefs", Context.MODE_PRIVATE)
+                .edit().remove("downloaded_update_version").apply()
             refreshUpdateDialogUi()
             return
         }
 
-        val apkUri = androidx.core.content.FileProvider.getUriForFile(
-            context,
-            "${context.packageName}.fileprovider",
-            localFile
-        )
+        // Android 8+: installing APKs requires "Install unknown apps" for this package.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val canInstall = context.packageManager.canRequestPackageInstalls()
+            if (!canInstall) {
+                Toast.makeText(
+                    context,
+                    "Allow “Install unknown apps” for CSV TV, then tap Install again.",
+                    Toast.LENGTH_LONG
+                ).show()
+                try {
+                    val settingsIntent = Intent(
+                        Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                        Uri.parse("package:${context.packageName}")
+                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    context.startActivity(settingsIntent)
+                } catch (e: Exception) {
+                    Log.w("MainFragment", "Could not open unknown-sources settings", e)
+                }
+                return
+            }
+        }
+
+        val apkUri = try {
+            FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.fileprovider",
+                localFile
+            )
+        } catch (e: Exception) {
+            Log.e("MainFragment", "FileProvider failed for ${localFile.absolutePath}", e)
+            Toast.makeText(context, "Cannot share APK for install: ${e.message}", Toast.LENGTH_LONG).show()
+            return
+        }
 
         val installIntent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(apkUri, "application/vnd.android.package-archive")
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        }
+
+        // Grant read to any package that can handle install (TV installers vary).
+        val resInfoList = context.packageManager.queryIntentActivities(installIntent, 0)
+        for (resolveInfo in resInfoList) {
+            val packageName = resolveInfo.activityInfo.packageName
+            context.grantUriPermission(
+                packageName,
+                apkUri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
         }
 
         try {
+            Log.d(
+                "MainFragment",
+                "Starting install: version=$latestUpdateVersion file=${localFile.absolutePath} " +
+                    "size=${localFile.length()} handlers=${resInfoList.size}"
+            )
             context.startActivity(installIntent)
         } catch (e: Exception) {
             Log.e("MainFragment", "Failed to start install activity", e)

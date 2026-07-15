@@ -13,6 +13,7 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.fragment.app.FragmentActivity
 
@@ -23,6 +24,18 @@ class SetupActivity : FragmentActivity() {
 
     private lateinit var sheetLinkInput: EditText
     private lateinit var defaultBrowserToggle: Button
+    private lateinit var closeButton: Button
+    private lateinit var setupTitle: TextView
+    private lateinit var setupSubtitle: TextView
+
+    /**
+     * True when no CSV is configured yet (first launch / re-init).
+     * False when opened from main Settings with an existing source.
+     */
+    private var isInitMode = false
+
+    /** Double Back/Exit confirmation when quitting with no CSV. */
+    private var lastExitAttemptMs = 0L
 
     private val filePickerLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -49,15 +62,17 @@ class SetupActivity : FragmentActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setContentView(R.layout.activity_setup)
 
-        sheetLinkInput = findViewById<EditText>(R.id.sheet_link_input)
-        val closeButton = findViewById<Button>(R.id.cancel_button)
+        sheetLinkInput = findViewById(R.id.sheet_link_input)
+        closeButton = findViewById(R.id.cancel_button)
+        setupTitle = findViewById(R.id.setup_title)
+        setupSubtitle = findViewById(R.id.setup_subtitle)
         val pasteButton = findViewById<Button>(R.id.paste_button)
         val selectCsvButton = findViewById<Button>(R.id.select_csv_button)
         val historyButton = findViewById<Button>(R.id.history_button)
         val purgeFreqButton = findViewById<Button>(R.id.purge_freq_button)
         val resetAllButton = findViewById<Button>(R.id.reset_all_button)
         val sourceDetailsToggle = findViewById<Button>(R.id.source_details_toggle)
-        defaultBrowserToggle = findViewById<Button>(R.id.default_browser_toggle)
+        defaultBrowserToggle = findViewById(R.id.default_browser_toggle)
         val applyButton = findViewById<Button>(R.id.apply_button)
         val aboutButton = findViewById<Button>(R.id.about_button)
 
@@ -83,10 +98,18 @@ class SetupActivity : FragmentActivity() {
         val sharedPrefs = getSharedPreferences("AppPrefs", MODE_PRIVATE)
         val currentSheetLink = sharedPrefs.getString("sheet_link", null)
 
+        // Prefer explicit intent flag; fall back to prefs (no CSV → init).
+        isInitMode = if (intent.hasExtra(EXTRA_INIT_MODE)) {
+            intent.getBooleanExtra(EXTRA_INIT_MODE, currentSheetLink.isNullOrBlank())
+        } else {
+            currentSheetLink.isNullOrBlank()
+        }
+
         currentSheetLink?.let {
             sheetLinkInput.setText(it)
         }
         closeButton.visibility = View.VISIBLE
+        applyInitOrSettingsChrome()
 
         // Auto-apply on keyboard "Done" or "Enter" actions (validates)
         sheetLinkInput.setOnEditorActionListener { _, actionId, _ ->
@@ -186,9 +209,28 @@ class SetupActivity : FragmentActivity() {
             showAboutDialog()
         }
 
-        // Close button: auto-saves (validates) any pending CSV source change before closing
+        // Close / Exit / Back: same path (save/validate, return to main, or confirm quit if no CSV).
         closeButton.setOnClickListener {
             attemptAutoSaveAndClose()
+        }
+
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                attemptAutoSaveAndClose()
+            }
+        })
+    }
+
+    /** Title, subtitle, and primary exit label for init vs settings. */
+    private fun applyInitOrSettingsChrome() {
+        if (isInitMode) {
+            setupTitle.text = "Setup"
+            setupSubtitle.text = "Add your CSV source to get started"
+            closeButton.text = "Exit app"
+        } else {
+            setupTitle.text = "Settings"
+            setupSubtitle.text = "Change your CSV source and preferences"
+            closeButton.text = "Back to main"
         }
     }
 
@@ -308,7 +350,8 @@ class SetupActivity : FragmentActivity() {
 
         if (input.isBlank()) {
             if (currentSaved.isNullOrBlank()) {
-                finishAffinity()
+                // Init / no source: require double Back or Exit to leave the app.
+                requestQuitWithNoCsv()
             } else {
                 navigateToMainActivity()
             }
@@ -323,12 +366,32 @@ class SetupActivity : FragmentActivity() {
         // Auto save + validate changed source on close
         val candidates = determineFinalSheetLinks(input)
         if (candidates.isEmpty()) {
+            if (currentSaved.isNullOrBlank()) {
+                showToast("Invalid CSV source format. Enter a valid URL or ID.")
+                return
+            }
             showToast("Invalid CSV source format - using previous.")
             navigateToMainActivity()
             return
         }
 
         validateCandidatesAndSave(candidates, 0, input, autoClose = true)
+    }
+
+    /**
+     * When no CSV is configured, first Back/Exit prompts; second within the window quits.
+     * Avoids accidental app exit on TV remotes.
+     */
+    private fun requestQuitWithNoCsv() {
+        val now = System.currentTimeMillis()
+        if (now - lastExitAttemptMs <= EXIT_CONFIRM_WINDOW_MS) {
+            finishAffinity()
+            return
+        }
+        lastExitAttemptMs = now
+        showToast("Add a CSV source, or press Back / Exit again to leave")
+        // Keep focus on exit control for a quick second press on TV.
+        closeButton.requestFocus()
     }
 
     private fun determineFinalSheetLinks(input: String): List<String> {
@@ -362,8 +425,15 @@ class SetupActivity : FragmentActivity() {
         if (index >= candidates.size) {
             dismissLoading()
             if (autoClose) {
-                showToast("Failed to load CSV from new source. Keeping previous source.")
-                navigateToMainActivity()
+                val hasPrevious = !getSharedPreferences("AppPrefs", MODE_PRIVATE)
+                    .getString("sheet_link", null).isNullOrBlank()
+                if (hasPrevious) {
+                    showToast("Failed to load CSV from new source. Keeping previous source.")
+                    navigateToMainActivity()
+                } else {
+                    // Init mode: stay here so the user can fix the source.
+                    showToast("Failed to load CSV. Check the URL or ID and try again.")
+                }
             } else {
                 AlertDialog.Builder(this)
                     .setTitle("Validation Failed")
@@ -455,5 +525,18 @@ class SetupActivity : FragmentActivity() {
     private fun navigateToMainActivity() {
         startActivity(Intent(this, MainActivity::class.java))
         finish()
+    }
+
+    companion object {
+        /** true = first-run / no CSV init; false = settings from main. */
+        const val EXTRA_INIT_MODE = "extra_init_mode"
+
+        private const val EXIT_CONFIRM_WINDOW_MS = 2500L
+
+        fun createIntent(context: Context, initMode: Boolean): Intent {
+            return Intent(context, SetupActivity::class.java).apply {
+                putExtra(EXTRA_INIT_MODE, initMode)
+            }
+        }
     }
 }

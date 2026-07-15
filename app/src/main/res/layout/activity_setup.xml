@@ -13,13 +13,23 @@
         android:padding="24dp">
 
         <TextView
+            android:id="@+id/setup_title"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginBottom="20dp"
+            android:layout_marginBottom="4dp"
             android:text="Settings"
             android:textColor="@android:color/white"
             android:textSize="28sp"
             android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/setup_subtitle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="20dp"
+            android:text="Change your CSV source and preferences"
+            android:textColor="#A0FFFFFF"
+            android:textSize="15sp" />
 
         <!-- Two column layout -->
         <LinearLayout

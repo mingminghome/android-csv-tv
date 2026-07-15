@@ -27,6 +27,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.fragment.app.Fragment
 import org.json.JSONObject
 import androidx.core.view.ViewCompat
@@ -183,8 +184,18 @@ class WebViewFragment : Fragment() {
         btnWebHome.visibility = if (isBrowserCard) View.VISIBLE else View.GONE
 
         btnWebClose.setOnClickListener {
-            parentFragmentManager.popBackStack()
+            exitToMain()
         }
+
+        // Align system Back with D-pad Back: FS → history → main (same as Close at root).
+        requireActivity().onBackPressedDispatcher.addCallback(
+            viewLifecycleOwner,
+            object : OnBackPressedCallback(true) {
+                override fun handleOnBackPressed() {
+                    handleBackNavigation()
+                }
+            }
+        )
 
         if (isBrowserCard) {
             updateAdblockIcon()
@@ -604,7 +615,7 @@ class WebViewFragment : Fragment() {
             @Suppress("DEPRECATION")
             override fun onReceivedError(view: WebView?, errorCode: Int, description: String?, failingUrl: String?) {
                 showToast("Failed to load page: $description")
-                parentFragmentManager.popBackStack()
+                exitToMain()
             }
 
             @SuppressLint("WebViewClientOnReceivedSslError")
@@ -620,7 +631,7 @@ class WebViewFragment : Fragment() {
                             .setNegativeButton("Cancel") { _, _ ->
                                 handler?.cancel()
                                 if (isBrowserCard) {
-                                    parentFragmentManager.popBackStack()
+                                    exitToMain()
                                 }
                             }
                             .setCancelable(false)
@@ -791,7 +802,7 @@ class WebViewFragment : Fragment() {
     // Suggested missing Browser functions (some implemented, others for future):
     // - Ad blocking: implemented (isAdUrl + shouldInterceptRequest + auto-block in redirects/popups)
     // - Strict popup/new window blocking: implemented (onCreateWindow always blocks)
-    // - goHome(): implemented + wired to BACK key when no history (for browser)
+    // - goHome(): implemented (toolbar Home). Root BACK exits to main (aligned with Close).
     // - Bookmarks: TODO (store in prefs like "browser_bookmarks", add "Add to Bookmarks", dialog to load)
     // - Visited history: TODO (collect in onPageFinished, dialog like CSV recent sources)
     // - Download listener: TODO (add webView.setDownloadListener to handle file downloads)
@@ -988,7 +999,7 @@ class WebViewFragment : Fragment() {
             android.util.Log.w("WebViewFragment", "HTML video recover budget exhausted")
             showToast("Stream stalled. Leaving player…")
             stopHtmlVideoStallMonitor()
-            if (isAdded) parentFragmentManager.popBackStack()
+            exitToMain()
             return
         }
         htmlVideoRecoverCount++
@@ -1099,7 +1110,8 @@ class WebViewFragment : Fragment() {
                         return true
                     }
                     KeyEvent.KEYCODE_BACK -> {
-                        setCursorVisibility(false)
+                        // Align with stream player: Back exits the current layer (fullscreen).
+                        exitFullscreenIfNeeded()
                         return true
                     }
                 }
@@ -1128,7 +1140,7 @@ class WebViewFragment : Fragment() {
                         return true
                     }
                     KeyEvent.KEYCODE_BACK -> {
-                        webView.webChromeClient?.onHideCustomView()
+                        exitFullscreenIfNeeded()
                         return true
                     }
                 }
@@ -1182,29 +1194,82 @@ class WebViewFragment : Fragment() {
                 return true
             }
             KeyEvent.KEYCODE_BACK -> {
-                if (webView.canGoBack()) {
-                    webView.goBack()
-                } else if (isBrowserCard) {
-                    // For browser card: back key at end of history does not close.
-                    // Only the close button (click/center) closes the browser. Aligns with dedicated browser behavior.
-                    if (!isToolbarShowing) {
-                        setToolbarVisibility(true)
-                    }
-                    btnWebClose.requestFocus()
-                    // no toast or "back again" to avoid implying back can close
-                } else {
-                    if (isToolbarShowing && btnWebClose.isFocused) {
-                        parentFragmentManager.popBackStack()
-                    } else {
-                        setToolbarVisibility(true)
-                        btnWebClose.requestFocus()
-                        showToast("Press Close button or Back again to exit.")
-                    }
-                }
+                handleBackNavigation()
                 return true
             }
         }
         return false
+    }
+
+    /**
+     * Unified back ladder (aligned with native stream "leave current surface"):
+     * 1) Exit HTML5/site fullscreen if active
+     * 2) Web history if available
+     * 3) Return to main browse (same as Close)
+     */
+    private fun handleBackNavigation() {
+        if (isWebViewDestroyed || !isAdded) return
+        if (isInFullscreen) {
+            exitFullscreenIfNeeded()
+            return
+        }
+        if (::webView.isInitialized && webView.canGoBack()) {
+            webView.goBack()
+            updateNavigationButtons()
+            return
+        }
+        exitToMain()
+    }
+
+    private fun exitFullscreenIfNeeded() {
+        if (!isInFullscreen) return
+        try {
+            if (::webView.isInitialized && !isWebViewDestroyed) {
+                webView.webChromeClient?.onHideCustomView()
+            } else {
+                // Destroy/stop race: clear local FS state if the chrome client is already gone.
+                isInFullscreen = false
+                if (::fullscreenContainer.isInitialized) {
+                    fullscreenContainer.visibility = View.GONE
+                    fullscreenContainer.removeAllViews()
+                }
+            }
+        } catch (_: Exception) {
+            // Best-effort during power/stop races
+            isInFullscreen = false
+        }
+    }
+
+    /** Leave WebView and return to main browse. Does not quit the app process. */
+    private fun exitToMain() {
+        if (!isAdded) return
+        exitFullscreenIfNeeded()
+        stopHtmlVideoStallMonitor()
+        pauseHtmlMedia()
+        try {
+            if (!parentFragmentManager.isStateSaved) {
+                parentFragmentManager.popBackStack()
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun pauseHtmlMedia() {
+        if (isWebViewDestroyed || !::webView.isInitialized) return
+        try {
+            webView.evaluateJavascript(
+                """
+                (function() {
+                    var nodes = document.querySelectorAll('video, audio');
+                    for (var i = 0; i < nodes.length; i++) {
+                        try { nodes[i].pause(); } catch (e) {}
+                    }
+                })();
+                """.trimIndent(),
+                null
+            )
+        } catch (_: Exception) {
+        }
     }
 
     private fun handleCenterClick() {
@@ -1615,32 +1680,68 @@ class WebViewFragment : Fragment() {
 
     override fun onPause() {
         super.onPause()
-        webView.onPause()
-        webView.keepScreenOn = false
+        // Soft pause (same path as Power/Home intermediate step).
+        if (::webView.isInitialized && !isWebViewDestroyed) {
+            pauseHtmlMedia()
+            webView.onPause()
+            webView.keepScreenOn = false
+        }
+    }
+
+    /**
+     * Align with PlaybackFragment power/Home handling: leave fullscreen, stop stall
+     * recovery, and pause media so nothing keeps running in the background.
+     */
+    override fun onStop() {
+        super.onStop()
+        exitFullscreenIfNeeded()
+        stopHtmlVideoStallMonitor()
+        pauseHtmlMedia()
+        if (::webView.isInitialized && !isWebViewDestroyed) {
+            try {
+                webView.onPause()
+                webView.keepScreenOn = false
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        if (isWebViewDestroyed || !::webView.isInitialized || !isAdded) return
+        try {
+            webView.onResume()
+        } catch (_: Exception) {
+        }
+        // Non-browser stream pages: resume HTML5 playback + stall recovery after power/Home.
+        if (!isBrowserCard) {
+            tryPlayHtmlVideo()
+            startHtmlVideoStallMonitor()
+        }
     }
 
     override fun onResume() {
         super.onResume()
-        webView.onResume()
-        if (!webInputKeyboardShown) {
+        if (::webView.isInitialized && !isWebViewDestroyed) {
+            webView.onResume()
+        }
+        if (!webInputKeyboardShown && ::container.isInitialized) {
             container.requestFocus()
         }
         updateContentDimensions()
     }
 
     override fun onDestroyView() {
-        isWebViewDestroyed = true
+        // Tear down FS + monitors before marking destroyed so hide callbacks can run.
         stopHtmlVideoStallMonitor()
+        exitFullscreenIfNeeded()
+        isWebViewDestroyed = true
         super.onDestroyView()
         pointerHideHandler.removeCallbacksAndMessages(null)
         keyResetHandler.removeCallbacksAndMessages(null)
         jsHandler.removeCallbacksAndMessages(null)
         clickHandler.removeCallbacksAndMessages(null)
         videoStallHandler.removeCallbacksAndMessages(null)
-
-        if (isInFullscreen) {
-            webView.webChromeClient?.onHideCustomView()
-        }
 
         try {
             val activityContent = requireActivity().findViewById<ViewGroup>(android.R.id.content)

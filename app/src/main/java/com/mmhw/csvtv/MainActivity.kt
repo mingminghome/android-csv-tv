@@ -1,6 +1,5 @@
 package com.mmhw.csvtv
 
-import android.content.Intent
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.fragment.app.FragmentActivity
@@ -15,7 +14,8 @@ class MainActivity : FragmentActivity() {
         var sheetLink = sharedPrefs.getString("sheet_link", null)
 
         if (sheetLink.isNullOrBlank()) {
-            startActivity(Intent(this, SetupActivity::class.java))
+            // No CSV yet → Setup as first-run init (not empty main).
+            startActivity(SetupActivity.createIntent(this, initMode = true))
             finish()
             return
         }
