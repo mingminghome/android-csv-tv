@@ -91,6 +91,13 @@ class WebViewFragment : Fragment() {
 
     // When a non-browser WebView loads an embed page that fetches HLS, hand off to native player once.
     private var handedOffToNativePlayer = false
+    /**
+     * Stream URL we just handed off / returned from. Suppress auto re-handoff of the same
+     * dead source when the page keeps requesting it (HLS playlist poll, HTML video retry).
+     * Cleared on navigation to a different page or explicit refresh.
+     */
+    private var suppressHandoffUrl: String? = null
+    private var lastWebPageUrl: String? = null
 
     // HTML5 video stall recovery (WebView has no ExoPlayer stall detector)
     private val videoStallHandler = Handler(Looper.getMainLooper())
@@ -233,6 +240,9 @@ class WebViewFragment : Fragment() {
             }
         }
         btnWebRefresh.setOnClickListener {
+            // Explicit refresh: allow re-handoff of a previously failed stream.
+            suppressHandoffUrl = null
+            handedOffToNativePlayer = false
             if (isLoading) {
                 webView.stopLoading()
             } else {
@@ -474,6 +484,15 @@ class WebViewFragment : Fragment() {
             override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
                 super.onPageStarted(view, url, favicon)
                 isLoading = true
+                // Navigating to a different page: allow handoff of streams again.
+                if (!url.isNullOrBlank() &&
+                    !url.startsWith("about:") &&
+                    url != lastWebPageUrl
+                ) {
+                    lastWebPageUrl = url
+                    suppressHandoffUrl = null
+                    handedOffToNativePlayer = false
+                }
                 activity?.runOnUiThread {
                     if (isAdded) {
                         btnWebRefresh.setImageResource(R.drawable.ic_close)
@@ -602,9 +621,14 @@ class WebViewFragment : Fragment() {
                 }
                 // Non-browser: if the page fetches an HLS playlist, prefer native PlaybackFragment
                 // (ExoPlayer stall recovery) over a stuck HTML5/hls.js player.
-                if (!isBrowserCard && !handedOffToNativePlayer && isHlsPlaylistUrl(url)) {
+                // Skip suppressed (just-failed) stream so returning from player does not loop.
+                if (!isBrowserCard && !handedOffToNativePlayer && isHlsPlaylistUrl(url) &&
+                    !streamUrlsMatch(url, suppressHandoffUrl)
+                ) {
                     activity?.runOnUiThread {
-                        if (isAdded && !handedOffToNativePlayer) {
+                        if (isAdded && !handedOffToNativePlayer &&
+                            !streamUrlsMatch(url, suppressHandoffUrl)
+                        ) {
                             handOffToNativePlayer(url)
                         }
                     }
@@ -863,14 +887,30 @@ class WebViewFragment : Fragment() {
     }
 
     /**
-     * Replace WebView with native PlaybackFragment for direct stream URLs so
+     * Open native PlaybackFragment on top of this WebView for direct stream URLs so
      * ExoPlayer stall / live-edge recovery can run.
+     *
+     * WebView is [FragmentTransaction.hide]den (not replaced) so page history, clicks,
+     * and redirects survive. Back / reconnect-fail pop the player and return here —
+     * user does not re-do multi-step navigation from main browse.
      */
     private fun handOffToNativePlayer(streamUrl: String) {
         if (handedOffToNativePlayer || !isAdded || isWebViewDestroyed) return
         if (isBrowserCard) return
+        // Page may keep polling the same dead playlist after user leaves the player.
+        if (streamUrlsMatch(streamUrl, suppressHandoffUrl)) return
+
         handedOffToNativePlayer = true
+        suppressHandoffUrl = streamUrl
         stopHtmlVideoStallMonitor()
+        pauseHtmlMedia()
+        if (::webView.isInitialized && !isWebViewDestroyed) {
+            try {
+                webView.onPause()
+                webView.keepScreenOn = false
+            } catch (_: Exception) {
+            }
+        }
         android.util.Log.i("WebViewFragment", "Handing off stream to native player: $streamUrl")
         showToast("Opening stream in player…")
 
@@ -881,18 +921,57 @@ class WebViewFragment : Fragment() {
         }
         val fm = parentFragmentManager
         try {
-            // Drop the WebView back-stack entry, then open native player on top of browse.
-            if (!fm.isStateSaved && fm.backStackEntryCount > 0) {
-                fm.popBackStackImmediate()
+            if (fm.isStateSaved) {
+                android.util.Log.w("WebViewFragment", "Hand-off skipped: state already saved")
+                handedOffToNativePlayer = false
+                return
             }
+            // Keep this fragment's view + history under the player (hide, don't replace).
             fm.beginTransaction()
-                .replace(R.id.fragment_container, fragment)
+                .hide(this)
+                .add(R.id.fragment_container, fragment)
                 .addToBackStack(null)
                 .commitAllowingStateLoss()
         } catch (e: Exception) {
             android.util.Log.e("WebViewFragment", "Hand-off failed", e)
             handedOffToNativePlayer = false
         }
+    }
+
+    /** Loose match so query-order / trailing junk differences still suppress re-handoff. */
+    private fun streamUrlsMatch(a: String?, b: String?): Boolean {
+        if (a.isNullOrBlank() || b.isNullOrBlank()) return false
+        if (a == b) return true
+        fun normalize(u: String): String {
+            val noHash = u.substringBefore('#')
+            return noHash.trimEnd('/')
+        }
+        return normalize(a) == normalize(b)
+    }
+
+    /**
+     * Player was popped — allow a *different* stream to hand off again, but keep
+     * [suppressHandoffUrl] so the dead source does not auto-reopen.
+     */
+    private fun onReturnedFromNativePlayer() {
+        if (isWebViewDestroyed || !isAdded) return
+        handedOffToNativePlayer = false
+        if (::webView.isInitialized) {
+            try {
+                webView.onResume()
+                webView.keepScreenOn = true
+            } catch (_: Exception) {
+            }
+        }
+        if (!isBrowserCard) {
+            // Resume HTML5 only when we did not suppress a native handoff stream on this page.
+            // Stall monitor still useful for pages that never handed off.
+            startHtmlVideoStallMonitor()
+        }
+        android.util.Log.i(
+            "WebViewFragment",
+            "Returned from native player; suppress re-handoff of: $suppressHandoffUrl"
+        )
     }
 
     private fun tryPlayHtmlVideo() {
@@ -1706,9 +1785,21 @@ class WebViewFragment : Fragment() {
         }
     }
 
+    override fun onHiddenChanged(hidden: Boolean) {
+        super.onHiddenChanged(hidden)
+        if (!hidden) {
+            // Shown again after PlaybackFragment pop (hide/add handoff).
+            onReturnedFromNativePlayer()
+        } else {
+            stopHtmlVideoStallMonitor()
+            pauseHtmlMedia()
+        }
+    }
+
     override fun onStart() {
         super.onStart()
-        if (isWebViewDestroyed || !::webView.isInitialized || !isAdded) return
+        // Hidden under native player — do not resume WebView media/stall recovery.
+        if (isWebViewDestroyed || !::webView.isInitialized || !isAdded || isHidden) return
         try {
             webView.onResume()
         } catch (_: Exception) {
@@ -1722,6 +1813,7 @@ class WebViewFragment : Fragment() {
 
     override fun onResume() {
         super.onResume()
+        if (isHidden) return
         if (::webView.isInitialized && !isWebViewDestroyed) {
             webView.onResume()
         }

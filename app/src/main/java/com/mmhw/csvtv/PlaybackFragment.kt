@@ -170,8 +170,8 @@ class PlaybackFragment : Fragment() {
         playerView?.useController = false
         playerView?.keepScreenOn = true
 
-        // Single Back → main browse (do not require hiding controller first).
-        // Aligns with WebView root Back / Close and Settings Close path.
+        // Single Back → previous surface (WebView session if handed off from a page,
+        // otherwise main browse). Do not require hiding controller first.
         requireActivity().onBackPressedDispatcher.addCallback(
             viewLifecycleOwner,
             object : OnBackPressedCallback(true) {
@@ -187,7 +187,7 @@ class PlaybackFragment : Fragment() {
                             requireActivity().onBackPressedDispatcher.onBackPressed()
                         }
                     } catch (e: Exception) {
-                        Log.w(TAG, "Back to main failed", e)
+                        Log.w(TAG, "Back navigation failed", e)
                     }
                 }
             }
