@@ -152,16 +152,17 @@ Contributions are welcome! To contribute:
 
 Please ensure your code follows the project’s coding style and includes appropriate tests.
 
-## License
-
-This project is licensed under the GNU General Public License v3 (GPLv3). See the LICENSE file for details.
-
 ## Support the Project
 
 If you find this app useful, consider supporting its development by buying me a pint!
 
-<a href="https://buymeacoffee.com/mingminghomework"><img src="https://img.buymeacoffee.com/button-api/?text=Buy me a pint&emoji=🍺&slug=mingminghomework&button_colour=5F7FFF&font_colour=ffffff&font_family=Cookie&outline_colour=000000&coffee_colour=FFDD00" alt="Buy me a pint"></a>
+<a href="https://buymeacoffee.com/mingminghomework"><img src="https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20pint&emoji=%F0%9F%8D%BA&slug=mingminghomework&button_colour=5F7FFF&font_colour=ffffff&font_family=Cookie&outline_colour=000000&coffee_colour=FFDD00" alt="Buy me a pint"></a>
 
+## License
+
+This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
+
+> **Note:** The optional [Jellyfin Media3 FFmpeg decoder](https://github.com/jellyfin/jellyfin-androidx-media) dependency is licensed under **GPL-3.0**. If you redistribute builds that include that library, follow its license terms as well.
 
 ## Acknowledgments
 

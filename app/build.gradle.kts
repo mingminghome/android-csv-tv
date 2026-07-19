@@ -102,7 +102,8 @@ dependencies {
     implementation("androidx.media3:media3-datasource-rtmp:$media3")
     implementation("androidx.media3:media3-datasource-okhttp:$media3")
     // Prebuilt FFmpeg audio (MPEG-L2/MP2, AC3, DTS, etc.) — many IPTV TS streams need this.
-    // GPL-3.0 (matches this project). Provides androidx.media3.decoder.ffmpeg.FfmpegAudioRenderer.
+    // Dependency is GPL-3.0 (Jellyfin); project source is MIT — see README License note.
+    // Provides androidx.media3.decoder.ffmpeg.FfmpegAudioRenderer.
     implementation("org.jellyfin.media3:media3-ffmpeg-decoder:1.5.0+1")
 
     // Glide for image loading
