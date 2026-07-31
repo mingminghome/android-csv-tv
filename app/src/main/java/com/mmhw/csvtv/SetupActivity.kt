@@ -73,6 +73,7 @@ class SetupActivity : FragmentActivity() {
         val resetAllButton = findViewById<Button>(R.id.reset_all_button)
         val sourceDetailsToggle = findViewById<Button>(R.id.source_details_toggle)
         defaultBrowserToggle = findViewById(R.id.default_browser_toggle)
+        val adblockListsButton = findViewById<Button>(R.id.adblock_lists_button)
         val applyButton = findViewById<Button>(R.id.apply_button)
         val aboutButton = findViewById<Button>(R.id.about_button)
 
@@ -181,9 +182,14 @@ class SetupActivity : FragmentActivity() {
             // Reset all settings to defaults
             Utils.setShowSourceDetailsEnabled(this, false)
             Utils.setDefaultBrowserPage(this, "https://duckduckgo.com/")
+            AdBlocker.resetSourcesToDefault(this)
             updateDetailsToggleText()
             updateBrowserToggleText()
             showToast("All settings reset to default")
+        }
+
+        adblockListsButton.setOnClickListener {
+            showAdblockListsDialog()
         }
 
         // Source Details Toggle Button
@@ -290,6 +296,259 @@ class SetupActivity : FragmentActivity() {
             .setTitle("About")
             .setMessage("Version: $version\nDeveloper: MingMingHomeWork")
             .setPositiveButton("OK", null)
+            .show()
+    }
+
+    /**
+     * TV-friendly adblock hub:
+     * 1) My blocked sites — add/remove domains with D-pad (no files)
+     * 2) List packs — toggle trusted auto-downloaded packs
+     * 3) Update packs / more options
+     */
+    private fun showAdblockListsDialog() {
+        AdBlocker.ensureLoaded(this)
+        val userCount = AdBlocker.getUserHosts(this).size
+        val (hostCount, _) = AdBlocker.ruleStats()
+        val packsOn = AdBlocker.getSources(this).count { it.enabled }
+
+        val overlayOn = AdBlocker.isOverlayBlockingEnabled(this)
+        val items = arrayOf(
+            "My blocked sites ($userCount) — add or remove domains",
+            "List packs ($packsOn on) — choose trusted filter packs",
+            "Page popups & overlays: ${if (overlayOn) "ON" else "OFF"} — hide in-site spam",
+            "Update packs now — download latest remote lists",
+            "More options…"
+        )
+
+        AlertDialog.Builder(this)
+            .setTitle("Adblock  ·  $hostCount rules active")
+            .setItems(items) { _, which ->
+                when (which) {
+                    0 -> showMyBlockedSitesDialog()
+                    1 -> showListPacksDialog()
+                    2 -> {
+                        val next = !AdBlocker.isOverlayBlockingEnabled(this)
+                        AdBlocker.setOverlayBlockingEnabled(this, next)
+                        showToast("Page popups & overlays: ${if (next) "ON" else "OFF"}")
+                        showAdblockListsDialog()
+                    }
+                    3 -> {
+                        if (AdBlocker.isUpdateInProgress()) {
+                            showToast("Update already in progress…")
+                            return@setItems
+                        }
+                        showToast("Downloading filter packs…")
+                        AdBlocker.updateAllRemote(this) { _, message ->
+                            runOnUiThread {
+                                showToast(message)
+                                showAdblockListsDialog()
+                            }
+                        }
+                    }
+                    4 -> showAdblockMoreOptionsDialog()
+                }
+            }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    /** Personal domain list — primary way for TV users to extend blocking. */
+    private fun showMyBlockedSitesDialog() {
+        val hosts = AdBlocker.getUserHosts(this)
+        val labels = ArrayList<String>()
+        labels.add("+ Add a domain to block")
+        for (h in hosts) {
+            labels.add(h)
+        }
+        if (hosts.isNotEmpty()) {
+            labels.add("Clear all my blocked sites")
+        }
+
+        val clearIndex = if (hosts.isNotEmpty()) labels.lastIndex else -1
+
+        AlertDialog.Builder(this)
+            .setTitle("My blocked sites")
+            .setMessage(
+                if (hosts.isEmpty()) {
+                    "No personal domains yet.\nAdd something like ads.example.com"
+                } else {
+                    "Select a domain to remove it."
+                }
+            )
+            .setItems(labels.toTypedArray()) { _, which ->
+                when {
+                    which == 0 -> showAddBlockedDomainDialog()
+                    which == clearIndex -> {
+                        AlertDialog.Builder(this)
+                            .setTitle("Clear all?")
+                            .setMessage("Remove all ${hosts.size} domains from My blocked sites?")
+                            .setPositiveButton("Clear") { _, _ ->
+                                AdBlocker.clearUserHosts(this)
+                                showToast("Cleared personal block list")
+                                showMyBlockedSitesDialog()
+                            }
+                            .setNegativeButton("Cancel") { _, _ -> showMyBlockedSitesDialog() }
+                            .show()
+                    }
+                    which in 1..hosts.size -> {
+                        val domain = hosts[which - 1]
+                        AlertDialog.Builder(this)
+                            .setTitle("Unblock?")
+                            .setMessage("Stop blocking $domain?")
+                            .setPositiveButton("Unblock") { _, _ ->
+                                AdBlocker.removeUserHost(this, domain)
+                                showToast("Unblocked $domain")
+                                showMyBlockedSitesDialog()
+                            }
+                            .setNegativeButton("Cancel") { _, _ -> showMyBlockedSitesDialog() }
+                            .show()
+                    }
+                }
+            }
+            .setNegativeButton("Back") { _, _ -> showAdblockListsDialog() }
+            .show()
+    }
+
+    private fun showAddBlockedDomainDialog() {
+        val input = EditText(this).apply {
+            hint = "example.com or https://ads.example.com"
+            inputType = android.text.InputType.TYPE_TEXT_VARIATION_URI
+            setTextColor(0xFFFFFFFF.toInt())
+            setHintTextColor(0x66FFFFFF)
+            setPadding(48, 32, 48, 32)
+            // Prefer system keyboard for domain entry on Fire/TV sticks
+            isFocusable = true
+            isFocusableInTouchMode = true
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Block domain")
+            .setMessage("Enter a site or domain to always block in the browser.")
+            .setView(input)
+            .setPositiveButton("Block") { _, _ ->
+                val raw = input.text.toString()
+                val added = AdBlocker.addUserHost(this, raw)
+                if (added != null) {
+                    showToast("Blocking $added")
+                } else {
+                    showToast("Invalid domain (need something like ads.example.com)")
+                }
+                showMyBlockedSitesDialog()
+            }
+            .setNegativeButton("Cancel") { _, _ -> showMyBlockedSitesDialog() }
+            .show()
+
+        input.requestFocus()
+    }
+
+    /** Multi-select trusted packs — no URLs or file formats exposed. */
+    private fun showListPacksDialog() {
+        val sources = AdBlocker.getSources(this)
+        if (sources.isEmpty()) {
+            showToast("No list packs available")
+            showAdblockListsDialog()
+            return
+        }
+
+        val labels = sources.map { src ->
+            val status = when {
+                src.isAsset -> "built-in"
+                src.lastError != null -> "needs update"
+                src.lastUpdatedMs > 0 -> AdBlocker.formatLastUpdated(src.lastUpdatedMs)
+                else -> "not downloaded yet"
+            }
+            "${src.name}  ($status)"
+        }.toTypedArray()
+        val checked = sources.map { it.enabled }.toBooleanArray()
+
+        AlertDialog.Builder(this)
+            .setTitle("List packs")
+            .setMultiChoiceItems(labels, checked) { _, which, isChecked ->
+                val id = sources[which].id
+                AdBlocker.setSourceEnabled(this, id, isChecked)
+                checked[which] = isChecked
+            }
+            .setPositiveButton("Done") { _, _ -> showAdblockListsDialog() }
+            .setNeutralButton("Update") { _, _ ->
+                if (AdBlocker.isUpdateInProgress()) {
+                    showToast("Update already in progress…")
+                    showListPacksDialog()
+                    return@setNeutralButton
+                }
+                showToast("Downloading…")
+                AdBlocker.updateAllRemote(this) { _, message ->
+                    runOnUiThread {
+                        showToast(message)
+                        showListPacksDialog()
+                    }
+                }
+            }
+            .setNegativeButton("Back") { _, _ -> showAdblockListsDialog() }
+            .show()
+    }
+
+    private fun showAdblockMoreOptionsDialog() {
+        val items = arrayOf(
+            "Reset list packs to defaults",
+            "Clear my blocked sites",
+            "Add pack from URL (advanced)"
+        )
+        AlertDialog.Builder(this)
+            .setTitle("Adblock — more")
+            .setItems(items) { _, which ->
+                when (which) {
+                    0 -> {
+                        AdBlocker.resetSourcesToDefault(this, clearUserHosts = false)
+                        showToast("List packs reset")
+                        showAdblockListsDialog()
+                    }
+                    1 -> {
+                        AdBlocker.clearUserHosts(this)
+                        showToast("Cleared my blocked sites")
+                        showAdblockListsDialog()
+                    }
+                    2 -> showAddAdblockSourceDialog()
+                }
+            }
+            .setNegativeButton("Back") { _, _ -> showAdblockListsDialog() }
+            .show()
+    }
+
+    /** Advanced: optional remote pack URL (hidden under More). */
+    private fun showAddAdblockSourceDialog() {
+        val urlInput = EditText(this).apply {
+            hint = "https://…/hosts.txt"
+            inputType = android.text.InputType.TYPE_TEXT_VARIATION_URI
+            setTextColor(0xFFFFFFFF.toInt())
+            setHintTextColor(0x66FFFFFF)
+            setPadding(48, 32, 48, 32)
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Add pack from URL")
+            .setMessage("For advanced users. Most people should use List packs or My blocked sites instead.")
+            .setView(urlInput)
+            .setPositiveButton("Add") { _, _ ->
+                val url = urlInput.text.toString().trim()
+                if (AdBlocker.addCustomSource(this, "", url)) {
+                    showToast("Pack added. Downloading…")
+                    val added = AdBlocker.getSources(this).lastOrNull { it.isCustom }
+                    if (added != null) {
+                        AdBlocker.updateSingleRemote(this, added.id) { ok, message ->
+                            runOnUiThread {
+                                showToast(if (ok) message else "Download failed: $message")
+                                showListPacksDialog()
+                            }
+                        }
+                    } else {
+                        showListPacksDialog()
+                    }
+                } else {
+                    showToast("URL must start with http:// or https://")
+                    showAdblockMoreOptionsDialog()
+                }
+            }
+            .setNegativeButton("Cancel") { _, _ -> showAdblockMoreOptionsDialog() }
             .show()
     }
 

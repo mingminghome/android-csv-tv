@@ -19,6 +19,9 @@ class MainActivity : FragmentActivity() {
             finish()
             return
         }
+        // Warm adblock rule engine + auto-download remote lists when stale
+        AdBlocker.ensureLoaded(applicationContext)
+
         if (savedInstanceState == null) {
             val fragment = MainFragment().apply {
                 arguments = Bundle().apply {

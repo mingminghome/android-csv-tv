@@ -1,0 +1,55 @@
+# CSS selectors to hide (cosmetic filtering). One selector per line.
+# Used when Adblock + "Block popups & overlays" are on.
+# Avoid Selectors Level 4 flags (e.g. [attr i]) for older Android WebViews.
+
+# --- Generic ad / popup chrome ---
+[id*="google_ads"]
+[id*="ad-container"]
+[id*="ad_container"]
+[class*="google-ad"]
+[class*="adsbox"]
+[class*="ad-banner"]
+[class*="ad_banner"]
+[class*="ad-wrapper"]
+[class*="advertisement"]
+[id*="taboola"]
+[class*="taboola"]
+[id*="outbrain"]
+[class*="outbrain"]
+[class*="trc_rbox"]
+[id*="amzn-assoc"]
+iframe[src*="doubleclick"]
+iframe[src*="googlesyndication"]
+iframe[src*="adservice"]
+iframe[id*="google_ads"]
+iframe[src*="adnxs"]
+
+# --- Common interstitial / popup patterns ---
+[class*="popup-overlay"]
+[class*="popup_overlay"]
+[id*="popup-overlay"]
+[class*="ad-overlay"]
+[class*="adoverlay"]
+[class*="ads-overlay"]
+[id*="ad-overlay"]
+[class*="interstitial"]
+[id*="interstitial"]
+[class*="exit-intent"]
+[class*="exitintent"]
+[class*="fancybox-overlay"]
+.fc-ab-root
+.fc-dialog-overlay
+[class*="adblock-msg"]
+[class*="adblock-modal"]
+[id*="adblock-modal"]
+[class*="adb-enabled"]
+[class*="app-download-banner"]
+[class*="download-app-banner"]
+[class*="smartbanner"]
+.smartbanner
+
+# --- Video-site ad chrome ---
+[class*="video-ads"]
+[class*="ima-ad"]
+.ima-ad-container
+div[aria-label*="Advertisement"]

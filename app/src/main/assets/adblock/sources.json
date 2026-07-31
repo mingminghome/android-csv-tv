@@ -1,0 +1,33 @@
+{
+  "autoUpdateIntervalDays": 7,
+  "sources": [
+    {
+      "id": "builtin",
+      "name": "Built-in defaults",
+      "type": "asset",
+      "path": "adblock/default.txt",
+      "enabled": true
+    },
+    {
+      "id": "adaway",
+      "name": "AdAway hosts",
+      "type": "remote",
+      "url": "https://adaway.org/hosts.txt",
+      "enabled": true
+    },
+    {
+      "id": "yoyo",
+      "name": "yoyo.org ad servers",
+      "type": "remote",
+      "url": "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=hosts&showintro=0&mimetype=plaintext",
+      "enabled": true
+    },
+    {
+      "id": "stevenblack",
+      "name": "StevenBlack hosts (base)",
+      "type": "remote",
+      "url": "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
+      "enabled": false
+    }
+  ]
+}

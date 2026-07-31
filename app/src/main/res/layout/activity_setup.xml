@@ -192,13 +192,27 @@
                     android:id="@+id/default_browser_toggle"
                     android:layout_width="match_parent"
                     android:layout_height="48dp"
-                    android:layout_marginBottom="4dp"
+                    android:layout_marginBottom="6dp"
                     android:background="@drawable/button_focus_bg"
                     android:drawableStart="@drawable/ic_image_icon"
                     android:drawablePadding="10dp"
                     android:gravity="center_vertical|start"
                     android:paddingStart="14dp"
                     android:text="Default Search: DuckDuckGo"
+                    android:textAllCaps="false"
+                    android:textColor="@color/button_text_color" />
+
+                <Button
+                    android:id="@+id/adblock_lists_button"
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp"
+                    android:layout_marginBottom="4dp"
+                    android:background="@drawable/button_focus_bg"
+                    android:drawableStart="@drawable/ic_check_circle"
+                    android:drawablePadding="10dp"
+                    android:gravity="center_vertical|start"
+                    android:paddingStart="14dp"
+                    android:text="Adblock"
                     android:textAllCaps="false"
                     android:textColor="@color/button_text_color" />
 

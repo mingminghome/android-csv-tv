@@ -210,7 +210,16 @@ class WebViewFragment : Fragment() {
                 isAdblockEnabled = !isAdblockEnabled
                 updateAdblockIcon()
                 showToast("Adblock ${if (isAdblockEnabled) "enabled" else "disabled"}")
+                if (isAdblockEnabled) {
+                    injectOverlayCleaner()
+                }
             }
+            // Long-press: block current page domain (TV-friendly; no file editing)
+            btnWebAdblockToggle.setOnLongClickListener {
+                promptBlockCurrentDomain()
+                true
+            }
+            btnWebAdblockToggle.tooltipText = "Adblock (long-press: block this site)"
         }
 
         if (isBrowserCard) {
@@ -331,14 +340,62 @@ class WebViewFragment : Fragment() {
 
     private fun isAdUrl(url: String): Boolean {
         if (!isAdblockEnabled) return false
-        val adDomains = listOf(
-            "doubleclick.net", "googlesyndication.com", "googleadservices.com",
-            "facebook.com/tr", "adservice.google", "adnxs.com", "advertising.com",
-            "scorecardresearch.com", "quantserve.com", "chartbeat.com", "outbrain.com",
-            "taboola.com", "criteo.com", "adsafeprotected.com"
-        )
-        val lower = url.lowercase()
-        return adDomains.any { lower.contains(it) }
+        return AdBlocker.shouldBlock(url)
+    }
+
+    /**
+     * Inject CSS + JS to hide spam popups / full-page overlays when adblock is on.
+     * Safe to call multiple times; script is re-entry protected.
+     */
+    private fun injectOverlayCleaner() {
+        if (!isAdblockEnabled || isWebViewDestroyed || !::webView.isInitialized) return
+        val ctx = context ?: return
+        if (!AdBlocker.isOverlayBlockingEnabled(ctx)) return
+        try {
+            webView.evaluateJavascript(AdBlocker.buildOverlayCleanerScript(), null)
+        } catch (e: Exception) {
+            android.util.Log.w("WebViewFragment", "injectOverlayCleaner failed", e)
+        }
+    }
+
+    /** Block the host of the page currently open (stored in My blocked sites). */
+    private fun promptBlockCurrentDomain() {
+        if (isWebViewDestroyed || !isAdded) return
+        val pageUrl = webView.url
+        val host = pageUrl?.let { AdBlocker.normalizeUserHostInput(it) }
+        if (host.isNullOrBlank()) {
+            showToast("No page domain to block")
+            return
+        }
+        val already = AdBlocker.isUserHost(requireContext(), host)
+        AlertDialog.Builder(requireContext())
+            .setTitle(if (already) "Already blocked" else "Block this site?")
+            .setMessage(
+                if (already) {
+                    "$host is in My blocked sites.\nUnblock it?"
+                } else {
+                    "Always block $host in the browser?\n\nYou can manage this later in Settings → Adblock."
+                }
+            )
+            .setPositiveButton(if (already) "Unblock" else "Block") { _, _ ->
+                if (already) {
+                    AdBlocker.removeUserHost(requireContext(), host)
+                    showToast("Unblocked $host")
+                } else {
+                    AdBlocker.addUserHost(requireContext(), host)
+                    if (!isAdblockEnabled) {
+                        isAdblockEnabled = true
+                        updateAdblockIcon()
+                    }
+                    showToast("Blocking $host")
+                    // Reload so in-page ad requests are cut off immediately
+                    if (::webView.isInitialized && !isWebViewDestroyed) {
+                        webView.reload()
+                    }
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun updateAdblockIcon() {
@@ -348,11 +405,11 @@ class WebViewFragment : Fragment() {
         if (isAdblockEnabled) {
             val res = if (onId != 0) onId else R.drawable.ic_check_circle
             btnWebAdblockToggle.setImageResource(res)
-            btnWebAdblockToggle.tooltipText = "Adblock enabled (click to disable)"
+            btnWebAdblockToggle.tooltipText = "Adblock on · long-press to block this site"
         } else {
             val res = if (offId != 0) offId else R.drawable.ic_cancel_circle
             btnWebAdblockToggle.setImageResource(res)
-            btnWebAdblockToggle.tooltipText = "Adblock disabled (click to enable)"
+            btnWebAdblockToggle.tooltipText = "Adblock off · long-press to block this site"
         }
     }
 
@@ -460,6 +517,9 @@ class WebViewFragment : Fragment() {
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun setupWebView(url: String) {
+        // Load asset + cached remote blocklists; may auto-refresh stale remote sources
+        AdBlocker.ensureLoaded(requireContext().applicationContext)
+
         webView.settings.apply {
             javaScriptEnabled = true
             loadWithOverviewMode = true
@@ -562,6 +622,9 @@ class WebViewFragment : Fragment() {
                             """, null);
                         }
 
+                        // Hide in-page spam popups / JS overlays (cosmetic + heuristic)
+                        injectOverlayCleaner()
+
                         // Reset pointer after new page load so pointer works on new URL
                         if (!isInFullscreen) {
                             setCursorVisibility(true);
@@ -617,7 +680,7 @@ class WebViewFragment : Fragment() {
                 val url = request?.url?.toString() ?: return null
                 if (isAdUrl(url)) {
                     // Block ad resources (images, scripts, etc.)
-                    return android.webkit.WebResourceResponse("text/plain", "utf-8", null)
+                    return AdBlocker.emptyResponse()
                 }
                 // Non-browser: if the page fetches an HLS playlist, prefer native PlaybackFragment
                 // (ExoPlayer stall recovery) over a stuck HTML5/hls.js player.
@@ -824,7 +887,7 @@ class WebViewFragment : Fragment() {
     }
 
     // Suggested missing Browser functions (some implemented, others for future):
-    // - Ad blocking: implemented (isAdUrl + shouldInterceptRequest + auto-block in redirects/popups)
+    // - Ad blocking: AdBlocker (assets/adblock + remote lists; Settings → Adblock Lists)
     // - Strict popup/new window blocking: implemented (onCreateWindow always blocks)
     // - goHome(): implemented (toolbar Home). Root BACK exits to main (aligned with Close).
     // - Bookmarks: TODO (store in prefs like "browser_bookmarks", add "Add to Bookmarks", dialog to load)
