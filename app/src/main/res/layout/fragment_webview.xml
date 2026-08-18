@@ -107,8 +107,8 @@
                 android:layout_height="40dp"
                 android:layout_marginEnd="16dp"
                 android:background="?android:attr/selectableItemBackgroundBorderless"
-                android:src="@drawable/ic_desktop"
-                android:contentDescription="Toggle Desktop View"
+                android:src="@drawable/ic_phone"
+                android:contentDescription="Switch to mobile site"
                 android:focusable="true"
                 android:padding="8dp"
                 android:scaleType="centerInside" />

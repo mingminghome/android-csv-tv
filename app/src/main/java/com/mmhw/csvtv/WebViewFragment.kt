@@ -38,7 +38,7 @@ class WebViewFragment : Fragment() {
     private lateinit var webView: WebView
     private lateinit var pointer: ImageView
     private lateinit var container: ViewGroup
-    private var isDesktopMode = false
+    private var isDesktopMode = true
     private var isLoading = false
     private lateinit var btnWebBack: ImageButton
     private lateinit var btnWebForward: ImageButton
@@ -98,6 +98,12 @@ class WebViewFragment : Fragment() {
      */
     private var suppressHandoffUrl: String? = null
     private var lastWebPageUrl: String? = null
+    private val fullscreenGate = WebFullscreenGate()
+    private var hidingFullscreenOurselves = false
+    private val sslProceedHosts = mutableSetOf<String>()
+    private val sslDeniedHosts = mutableSetOf<String>()
+    private var sslPromptHost: String? = null
+    private val sslPromptHandlers = mutableListOf<android.webkit.SslErrorHandler>()
 
     // HTML5 video stall recovery (WebView has no ExoPlayer stall detector)
     private val videoStallHandler = Handler(Looper.getMainLooper())
@@ -181,6 +187,7 @@ class WebViewFragment : Fragment() {
         btnWebForward = view.findViewById(R.id.btn_web_forward)
         btnWebRefresh = view.findViewById(R.id.btn_web_refresh)
         btnWebDesktopToggle = view.findViewById(R.id.btn_web_desktop_toggle)
+        updateDesktopToggleUi()
         btnWebAutoFullscreen = view.findViewById(R.id.btn_web_auto_fullscreen)
         btnWebClose = view.findViewById(R.id.btn_web_close)
         btnWebAdblockToggle = view.findViewById(R.id.btn_web_adblock_toggle)
@@ -259,6 +266,7 @@ class WebViewFragment : Fragment() {
             }
         }
         btnWebAutoFullscreen.setOnClickListener {
+            allowSiteFullscreenForUserRequest()
             detectAndFullscreenMedia()
         }
         btnWebDesktopToggle.setOnClickListener {
@@ -464,6 +472,8 @@ class WebViewFragment : Fragment() {
                     } else {
                         Utils.buildSearchUrl(Utils.getDefaultBrowserPage(ctx), text)
                     }
+                    fullscreenGate.onNavigatedToNewPage()
+                    restoreSiteFullscreenApi()
                     webView.loadUrl(urlToLoad)
                     urlEditText?.setText(urlToLoad)
                     updateNavigationButtons()
@@ -535,6 +545,9 @@ class WebViewFragment : Fragment() {
             setSupportZoom(false)
             // Disable offscreen pre-raster to reduce EGL fence sync issues on some devices/emulators
             offscreenPreRaster = false
+            // Desktop by default so mobile players (auto-fullscreen + tiny episode lists)
+            // are not served on TV.
+            userAgentString = if (isDesktopMode) DESKTOP_USER_AGENT else null
         }
 
         webView.addJavascriptInterface(AndroidBridge(this), "AndroidBridge")
@@ -552,6 +565,8 @@ class WebViewFragment : Fragment() {
                     lastWebPageUrl = url
                     suppressHandoffUrl = null
                     handedOffToNativePlayer = false
+                    // Do not unlock auto-fullscreen here. Player pages (xiaoyakankan
+                    // ?vod=…) and CF hops change the URL without a user address entry.
                 }
                 activity?.runOnUiThread {
                     if (isAdded) {
@@ -624,6 +639,11 @@ class WebViewFragment : Fragment() {
 
                         // Hide in-page spam popups / JS overlays (cosmetic + heuristic)
                         injectOverlayCleaner()
+                        injectDesktopViewportIfNeeded()
+                        // SPA / reload can replace the document; keep the Back-exit lock.
+                        if (fullscreenGate.suppressUntilUserAction) {
+                            blockSiteFullscreenApi()
+                        }
 
                         // Reset pointer after new page load so pointer works on new URL
                         if (!isInFullscreen) {
@@ -708,24 +728,7 @@ class WebViewFragment : Fragment() {
             @SuppressLint("WebViewClientOnReceivedSslError")
             override fun onReceivedSslError(view: WebView?, handler: android.webkit.SslErrorHandler?, error: android.net.http.SslError?) {
                 activity?.runOnUiThread {
-                    if (isAdded && context != null) {
-                        AlertDialog.Builder(requireContext())
-                            .setTitle("SSL Certificate Error")
-                            .setMessage("The site's security certificate is not trusted.\n\n${error?.toString()}\n\nProceed anyway (insecure)?")
-                            .setPositiveButton("Proceed") { _, _ ->
-                                handler?.proceed()
-                            }
-                            .setNegativeButton("Cancel") { _, _ ->
-                                handler?.cancel()
-                                if (isBrowserCard) {
-                                    exitToMain()
-                                }
-                            }
-                            .setCancelable(false)
-                            .show()
-                    } else {
-                        handler?.cancel()
-                    }
+                    handleSslError(view, handler, error)
                 }
             }
         }
@@ -743,6 +746,17 @@ class WebViewFragment : Fragment() {
             override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
                 if (customView != null) {
                     onHideCustomView()
+                    return
+                }
+                if (!fullscreenGate.shouldAcceptSiteFullscreenRequest()) {
+                    android.util.Log.i(
+                        "WebViewFragment",
+                        "Ignoring site auto-fullscreen after user left fullscreen"
+                    )
+                    try {
+                        callback?.onCustomViewHidden()
+                    } catch (_: Exception) {
+                    }
                     return
                 }
 
@@ -779,6 +793,14 @@ class WebViewFragment : Fragment() {
 
             override fun onHideCustomView() {
                 if (customView == null) return
+
+                if (!hidingFullscreenOurselves) {
+                    // Site X / player chrome: same trap as Back if they re-request immediately.
+                    fullscreenGate.onUserExitedFullscreen()
+                    blockSiteFullscreenApi()
+                } else {
+                    fullscreenGate.onFullscreenHidden()
+                }
 
                 isInFullscreen = false
 
@@ -862,6 +884,118 @@ class WebViewFragment : Fragment() {
         }
     }
 
+    private fun handleSslError(
+        view: WebView?,
+        handler: android.webkit.SslErrorHandler?,
+        error: android.net.http.SslError?
+    ) {
+        if (handler == null) return
+        if (!isAdded || context == null || isWebViewDestroyed) {
+            try {
+                handler.cancel()
+            } catch (_: Exception) {
+            }
+            return
+        }
+
+        val failingUrl = error?.url
+        val pageUrl = view?.url?.takeUnless {
+            it.isBlank() || it.startsWith("about:") || it.startsWith("data:")
+        } ?: lastWebPageUrl
+        val failHost = WebSslPolicy.hostOf(failingUrl)
+        val isBlockedAd = failingUrl != null && isAdUrl(failingUrl)
+
+        if (failHost != null && sslProceedHosts.contains(failHost)) {
+            handler.proceed()
+            return
+        }
+        if (failHost != null && sslDeniedHosts.contains(failHost)) {
+            handler.cancel()
+            return
+        }
+
+        when (WebSslPolicy.decide(pageUrl, failingUrl, isBlockedAd)) {
+            WebSslAction.CANCEL_SILENT -> {
+                android.util.Log.i(
+                    "WebViewFragment",
+                    "Ignoring junk SSL (blocked): $failingUrl"
+                )
+                handler.cancel()
+            }
+            WebSslAction.PROCEED_SILENT -> {
+                android.util.Log.i(
+                    "WebViewFragment",
+                    "Third-party SSL without prompt: $failingUrl"
+                )
+                if (failHost != null) sslProceedHosts.add(failHost)
+                handler.proceed()
+            }
+            WebSslAction.PROMPT -> {
+                if (failHost != null && sslPromptHost == failHost) {
+                    sslPromptHandlers.add(handler)
+                    return
+                }
+                if (sslPromptHost != null) {
+                    // Another host while a prompt is up — don't stack dialogs.
+                    android.util.Log.i(
+                        "WebViewFragment",
+                        "SSL prompt already showing; skipping $failingUrl"
+                    )
+                    handler.proceed()
+                    return
+                }
+                showMainPageSslDialog(failHost, failingUrl, error, handler)
+            }
+        }
+    }
+
+    private fun showMainPageSslDialog(
+        failHost: String?,
+        failingUrl: String?,
+        error: android.net.http.SslError?,
+        handler: android.webkit.SslErrorHandler
+    ) {
+        val reason = when (error?.primaryError) {
+            android.net.http.SslError.SSL_UNTRUSTED -> "certificate is not trusted"
+            android.net.http.SslError.SSL_EXPIRED -> "certificate has expired"
+            android.net.http.SslError.SSL_IDMISMATCH -> "certificate does not match this site"
+            android.net.http.SslError.SSL_NOTYETVALID -> "certificate is not yet valid"
+            android.net.http.SslError.SSL_DATE_INVALID -> "certificate date is invalid"
+            else -> "certificate is not valid"
+        }
+        val site = failHost ?: failingUrl ?: "this site"
+        sslPromptHost = failHost
+        sslPromptHandlers.clear()
+        sslPromptHandlers.add(handler)
+
+        val finish = { proceed: Boolean ->
+            val pending = sslPromptHandlers.toList()
+            sslPromptHandlers.clear()
+            sslPromptHost = null
+            if (failHost != null) {
+                if (proceed) sslProceedHosts.add(failHost) else sslDeniedHosts.add(failHost)
+            }
+            for (h in pending) {
+                try {
+                    if (proceed) h.proceed() else h.cancel()
+                } catch (_: Exception) {
+                }
+            }
+        }
+
+        AlertDialog.Builder(requireContext())
+            .setTitle("SSL Certificate Error")
+            .setMessage(
+                "$site has an untrusted HTTPS certificate ($reason).\n\n" +
+                    "This is the page you opened. Ads and other sites are ignored automatically.\n\n" +
+                    "Proceed anyway (insecure)?"
+            )
+            .setPositiveButton("Proceed") { _, _ -> finish(true) }
+            .setNegativeButton("Cancel") { _, _ -> finish(false) }
+            .setOnCancelListener { finish(false) }
+            .show()
+    }
+
     private fun showRedirectDialog(url: String) {
         activity?.runOnUiThread {
             if (isWebViewDestroyed || !isAdded || context == null) return@runOnUiThread
@@ -870,6 +1004,8 @@ class WebViewFragment : Fragment() {
                 .setTitle("Redirect Blocked")
                 .setMessage("The page is trying to navigate automatically to:\n\n$url\n\nDo you want to allow this?")
                 .setPositiveButton("Allow") { _, _ ->
+                    fullscreenGate.onNavigatedToNewPage()
+                    restoreSiteFullscreenApi()
                     webView.loadUrl(url)
                 }
                 .setNegativeButton("Block", null)
@@ -880,6 +1016,8 @@ class WebViewFragment : Fragment() {
     private fun goHome() {
         if (isBrowserCard) {
             val home = Utils.getDefaultBrowserPage(requireContext())
+            fullscreenGate.onNavigatedToNewPage()
+            restoreSiteFullscreenApi()
             webView.loadUrl(home)
             urlEditText?.setText(home)
             updateNavigationButtons()
@@ -893,7 +1031,7 @@ class WebViewFragment : Fragment() {
     // - Bookmarks: TODO (store in prefs like "browser_bookmarks", add "Add to Bookmarks", dialog to load)
     // - Visited history: TODO (collect in onPageFinished, dialog like CSV recent sources)
     // - Download listener: TODO (add webView.setDownloadListener to handle file downloads)
-    // - SSL errors: TODO (override onReceivedSslError to allow or warn)
+    // - SSL errors: only the opened page prompts; junk/ad certs are silent
     // - Find in page: TODO (webView.findAllAsync etc with UI)
     // - Progress bar: TODO (add ProgressBar to toolbar layout, update in onProgressChanged)
     // - Clear cache/cookies for this session
@@ -1174,21 +1312,44 @@ class WebViewFragment : Fragment() {
     }
 
     private fun toggleDesktopMode() {
-        isDesktopMode = !isDesktopMode
-        if (isDesktopMode) {
-            webView.settings.userAgentString = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        applyDesktopMode(!isDesktopMode, reload = true, announce = true)
+    }
+
+    private fun applyDesktopMode(enabled: Boolean, reload: Boolean, announce: Boolean) {
+        isDesktopMode = enabled
+        if (::webView.isInitialized) {
+            webView.settings.userAgentString = if (enabled) DESKTOP_USER_AGENT else null
             webView.settings.useWideViewPort = true
             webView.settings.loadWithOverviewMode = true
-            btnWebDesktopToggle.setImageResource(R.drawable.ic_phone)
-            showToast("Requesting Desktop Site")
-        } else {
-            webView.settings.userAgentString = null
-            webView.settings.useWideViewPort = true
-            webView.settings.loadWithOverviewMode = true
-            btnWebDesktopToggle.setImageResource(R.drawable.ic_desktop)
-            showToast("Requesting Mobile Site")
         }
-        webView.reload()
+        updateDesktopToggleUi()
+        if (announce) {
+            showToast(if (enabled) "Requesting Desktop Site" else "Requesting Mobile Site")
+        }
+        if (reload && ::webView.isInitialized && !isWebViewDestroyed) {
+            webView.reload()
+        }
+    }
+
+    private fun updateDesktopToggleUi() {
+        if (!::btnWebDesktopToggle.isInitialized) return
+        if (isDesktopMode) {
+            btnWebDesktopToggle.setImageResource(R.drawable.ic_phone)
+            btnWebDesktopToggle.contentDescription = "Switch to mobile site"
+            btnWebDesktopToggle.tooltipText = "Desktop site · tap for mobile"
+        } else {
+            btnWebDesktopToggle.setImageResource(R.drawable.ic_desktop)
+            btnWebDesktopToggle.contentDescription = "Switch to desktop site"
+            btnWebDesktopToggle.tooltipText = "Mobile site · tap for desktop"
+        }
+    }
+
+    private fun injectDesktopViewportIfNeeded() {
+        if (!isDesktopMode || isWebViewDestroyed || !::webView.isInitialized) return
+        try {
+            webView.evaluateJavascript(DESKTOP_VIEWPORT_JS, null)
+        } catch (_: Exception) {
+        }
     }
 
     private fun updateContentDimensions() {
@@ -1253,7 +1414,7 @@ class WebViewFragment : Fragment() {
                     }
                     KeyEvent.KEYCODE_BACK -> {
                         // Align with stream player: Back exits the current layer (fullscreen).
-                        exitFullscreenIfNeeded()
+                        exitFullscreenIfNeeded(userInitiated = true)
                         return true
                     }
                 }
@@ -1282,7 +1443,7 @@ class WebViewFragment : Fragment() {
                         return true
                     }
                     KeyEvent.KEYCODE_BACK -> {
-                        exitFullscreenIfNeeded()
+                        exitFullscreenIfNeeded(userInitiated = true)
                         return true
                     }
                 }
@@ -1352,7 +1513,7 @@ class WebViewFragment : Fragment() {
     private fun handleBackNavigation() {
         if (isWebViewDestroyed || !isAdded) return
         if (isInFullscreen) {
-            exitFullscreenIfNeeded()
+            exitFullscreenIfNeeded(userInitiated = true)
             return
         }
         if (::webView.isInitialized && webView.canGoBack()) {
@@ -1363,8 +1524,13 @@ class WebViewFragment : Fragment() {
         exitToMain()
     }
 
-    private fun exitFullscreenIfNeeded() {
+    private fun exitFullscreenIfNeeded(userInitiated: Boolean = false) {
         if (!isInFullscreen) return
+        if (userInitiated) {
+            fullscreenGate.onUserExitedFullscreen()
+            blockSiteFullscreenApi()
+        }
+        hidingFullscreenOurselves = true
         try {
             if (::webView.isInitialized && !isWebViewDestroyed) {
                 webView.webChromeClient?.onHideCustomView()
@@ -1379,6 +1545,35 @@ class WebViewFragment : Fragment() {
         } catch (_: Exception) {
             // Best-effort during power/stop races
             isInFullscreen = false
+        } finally {
+            hidingFullscreenOurselves = false
+        }
+    }
+
+    /** Toolbar / double-click: user asked for fullscreen, so allow the site API again. */
+    private fun allowSiteFullscreenForUserRequest() {
+        fullscreenGate.onUserRequestedFullscreen()
+        restoreSiteFullscreenApi()
+    }
+
+    private fun allowSiteFullscreenAfterPageClick() {
+        fullscreenGate.onUserPageClick()
+        restoreSiteFullscreenApi()
+    }
+
+    private fun blockSiteFullscreenApi() {
+        evaluateFullscreenApiScript(BLOCK_SITE_FULLSCREEN_JS)
+    }
+
+    private fun restoreSiteFullscreenApi() {
+        evaluateFullscreenApiScript(RESTORE_SITE_FULLSCREEN_JS)
+    }
+
+    private fun evaluateFullscreenApiScript(js: String) {
+        if (isWebViewDestroyed || !::webView.isInitialized || !isAdded) return
+        try {
+            webView.evaluateJavascript(js, null)
+        } catch (_: Exception) {
         }
     }
 
@@ -1436,8 +1631,9 @@ class WebViewFragment : Fragment() {
         } else if (clickCount >= 2) {
             cancelPendingClick()
             if (isInFullscreen) {
-                webView.webChromeClient?.onHideCustomView()
+                exitFullscreenIfNeeded(userInitiated = true)
             } else {
+                allowSiteFullscreenForUserRequest()
                 toggleFullscreen()
             }
         }
@@ -1765,6 +1961,8 @@ class WebViewFragment : Fragment() {
             fullscreenContainer.dispatchTouchEvent(downEvent)
             fullscreenContainer.dispatchTouchEvent(upEvent)
         } else {
+            // Episode / player chrome click: allow the new video to auto-fullscreen.
+            allowSiteFullscreenAfterPageClick()
             container.dispatchTouchEvent(downEvent)
             container.dispatchTouchEvent(upEvent)
 
@@ -1891,6 +2089,14 @@ class WebViewFragment : Fragment() {
         stopHtmlVideoStallMonitor()
         exitFullscreenIfNeeded()
         isWebViewDestroyed = true
+        for (h in sslPromptHandlers) {
+            try {
+                h.cancel()
+            } catch (_: Exception) {
+            }
+        }
+        sslPromptHandlers.clear()
+        sslPromptHost = null
         super.onDestroyView()
         pointerHideHandler.removeCallbacksAndMessages(null)
         keyResetHandler.removeCallbacksAndMessages(null)
@@ -1918,5 +2124,71 @@ class WebViewFragment : Fragment() {
         } catch (e: Exception) {
             // Ignore errors during shutdown to avoid DeadObject or other during window exit
         }
+    }
+
+    companion object {
+        private const val DESKTOP_USER_AGENT =
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
+                "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+
+        private const val DESKTOP_VIEWPORT_JS = """
+            (function() {
+                try {
+                    var meta = document.querySelector('meta[name="viewport"]');
+                    if (!meta) {
+                        meta = document.createElement('meta');
+                        meta.setAttribute('name', 'viewport');
+                        (document.head || document.documentElement).appendChild(meta);
+                    }
+                    meta.setAttribute('content', 'width=1280, initial-scale=1.0');
+                } catch (e) {}
+            })();
+        """
+
+        /**
+         * Same-origin players re-call requestFullscreen() on play / fullscreenchange.
+         * Cross-origin iframes still go through [WebChromeClient.onShowCustomView].
+         */
+        private const val BLOCK_SITE_FULLSCREEN_JS = """
+            (function() {
+                try {
+                    if (window.__csvtvFsBlocked) return;
+                    window.__csvtvFsBlocked = true;
+                    var proto = Element.prototype;
+                    window.__csvtvOrigRF = proto.requestFullscreen;
+                    window.__csvtvOrigWRF = proto.webkitRequestFullscreen;
+                    var vproto = window.HTMLVideoElement && HTMLVideoElement.prototype;
+                    if (vproto) {
+                        window.__csvtvOrigWEF = vproto.webkitEnterFullscreen;
+                        window.__csvtvOrigWEFS = vproto.webkitEnterFullScreen;
+                    }
+                    var block = function() {
+                        try { return Promise.reject(new DOMException('Fullscreen blocked', 'NotAllowedError')); }
+                        catch (e) { return Promise.reject(e); }
+                    };
+                    proto.requestFullscreen = block;
+                    if (proto.webkitRequestFullscreen) proto.webkitRequestFullscreen = block;
+                    if (vproto && vproto.webkitEnterFullscreen) vproto.webkitEnterFullscreen = function() {};
+                    if (vproto && vproto.webkitEnterFullScreen) vproto.webkitEnterFullScreen = function() {};
+                } catch (e) {}
+            })();
+        """
+
+        private const val RESTORE_SITE_FULLSCREEN_JS = """
+            (function() {
+                try {
+                    if (!window.__csvtvFsBlocked) return;
+                    var proto = Element.prototype;
+                    if (window.__csvtvOrigRF) proto.requestFullscreen = window.__csvtvOrigRF;
+                    if (window.__csvtvOrigWRF) proto.webkitRequestFullscreen = window.__csvtvOrigWRF;
+                    var vproto = window.HTMLVideoElement && HTMLVideoElement.prototype;
+                    if (vproto) {
+                        if (window.__csvtvOrigWEF) vproto.webkitEnterFullscreen = window.__csvtvOrigWEF;
+                        if (window.__csvtvOrigWEFS) vproto.webkitEnterFullScreen = window.__csvtvOrigWEFS;
+                    }
+                    window.__csvtvFsBlocked = false;
+                } catch (e) {}
+            })();
+        """
     }
 }
