@@ -1,15 +1,15 @@
 package com.mmhw.csvtv
 
 /**
- * Stops streaming sites from trapping the user in HTML5 fullscreen.
+ * Stops streaming pages from trapping the user in an auto-opened surface
+ * (HTML5 fullscreen or native player handoff).
  *
- * Many embed players call requestFullscreen() on play (and again on
- * fullscreenchange after Back). After the user leaves fullscreen, later
- * site-initiated requests are ignored until they click the page (new
- * episode), press the fullscreen control, or type a new address.
- *
- * Automatic loads (Cloudflare hops, `?vod=` player updates) must not
- * unlock — those are how sites like xiaoyakankan reopen fullscreen.
+ * Embed players often request fullscreen on play, and HLS pages often
+ * fetch another playlist as soon as Back leaves the native player.
+ * After the user dismisses that surface, later site-initiated opens are
+ * ignored until they click the page, press a control, or type a new
+ * address. Automatic loads (Cloudflare hops, query-only player updates)
+ * must not unlock.
  */
 class WebFullscreenGate(
     private val clockMs: () -> Long = { System.currentTimeMillis() }

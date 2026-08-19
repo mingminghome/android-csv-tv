@@ -66,10 +66,19 @@ class WebFullscreenGateTest {
     @Test
     fun automaticPlayerUrlUpdate_doesNotUnlock() {
         gate.onUserExitedFullscreen()
-        // Query-only hops (e.g. ?vod=210_112560-0) are not a user address change.
+        // Query-only player hops are not a user address change.
         assertFalse(gate.shouldAcceptSiteFullscreenRequest())
         now += WebFullscreenGate.HIDE_COOLDOWN_MS + 5_000
         assertFalse(gate.shouldAcceptSiteFullscreenRequest())
+    }
+
+    @Test
+    fun afterDismiss_alternatePlaylistStillBlockedUntilClick() {
+        gate.onUserExitedFullscreen()
+        // A different CDN playlist on the same page must not auto-reopen.
+        assertFalse(gate.shouldAcceptSiteFullscreenRequest())
+        gate.onUserPageClick()
+        assertTrue(gate.shouldAcceptSiteFullscreenRequest())
     }
 
     @Test

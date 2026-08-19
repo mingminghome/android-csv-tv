@@ -12,7 +12,7 @@ class WebSslPolicyTest {
         assertEquals(
             WebSslAction.CANCEL_SILENT,
             WebSslPolicy.decide(
-                pageUrl = "https://tw.xiaoyakankan.com/post/1.html",
+                pageUrl = "https://watch.example.com/post/1.html",
                 failingUrl = "https://ads.doubleclick.net/pixel",
                 isBlockedAd = true
             )
@@ -24,7 +24,7 @@ class WebSslPolicyTest {
         assertEquals(
             WebSslAction.PROCEED_SILENT,
             WebSslPolicy.decide(
-                pageUrl = "https://tw.xiaoyakankan.com/post/1.html?vod=210_112560-0",
+                pageUrl = "https://watch.example.com/post/1.html?ep=2",
                 failingUrl = "https://spam-cdn.invalid/banner.js",
                 isBlockedAd = false
             )
@@ -36,8 +36,8 @@ class WebSslPolicyTest {
         assertEquals(
             WebSslAction.PROMPT,
             WebSslPolicy.decide(
-                pageUrl = "https://tw.xiaoyakankan.com/post/1.html",
-                failingUrl = "https://tw.xiaoyakankan.com/post/1.html",
+                pageUrl = "https://watch.example.com/post/1.html",
+                failingUrl = "https://watch.example.com/post/1.html",
                 isBlockedAd = false
             )
         )
@@ -48,8 +48,8 @@ class WebSslPolicyTest {
         assertEquals(
             WebSslAction.PROMPT,
             WebSslPolicy.decide(
-                pageUrl = "https://xiaoyakankan.com/post/1.html",
-                failingUrl = "https://player.xiaoyakankan.com/embed",
+                pageUrl = "https://watch.example.com/post/1.html",
+                failingUrl = "https://player.watch.example.com/embed",
                 isBlockedAd = false
             )
         )
@@ -70,8 +70,8 @@ class WebSslPolicyTest {
     @Test
     fun hostOf_parsesHttps() {
         assertEquals(
-            "tw.xiaoyakankan.com",
-            WebSslPolicy.hostOf("https://tw.xiaoyakankan.com/post/1.html?vod=1")
+            "watch.example.com",
+            WebSslPolicy.hostOf("https://watch.example.com/post/1.html?ep=1")
         )
     }
 

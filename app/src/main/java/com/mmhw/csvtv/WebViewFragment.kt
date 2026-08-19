@@ -99,6 +99,7 @@ class WebViewFragment : Fragment() {
     private var suppressHandoffUrl: String? = null
     private var lastWebPageUrl: String? = null
     private val fullscreenGate = WebFullscreenGate()
+    private val handoffGate = WebFullscreenGate()
     private var hidingFullscreenOurselves = false
     private val sslProceedHosts = mutableSetOf<String>()
     private val sslDeniedHosts = mutableSetOf<String>()
@@ -245,20 +246,21 @@ class WebViewFragment : Fragment() {
 
         btnWebBack.setOnClickListener {
             if (webView.canGoBack()) {
+                allowAutoOpenAfterUserNavigation()
                 webView.goBack()
                 updateNavigationButtons()
             }
         }
         btnWebForward.setOnClickListener {
             if (webView.canGoForward()) {
+                allowAutoOpenAfterUserNavigation()
                 webView.goForward()
                 updateNavigationButtons()
             }
         }
         btnWebRefresh.setOnClickListener {
             // Explicit refresh: allow re-handoff of a previously failed stream.
-            suppressHandoffUrl = null
-            handedOffToNativePlayer = false
+            allowAutoOpenAfterUserNavigation()
             if (isLoading) {
                 webView.stopLoading()
             } else {
@@ -472,8 +474,7 @@ class WebViewFragment : Fragment() {
                     } else {
                         Utils.buildSearchUrl(Utils.getDefaultBrowserPage(ctx), text)
                     }
-                    fullscreenGate.onNavigatedToNewPage()
-                    restoreSiteFullscreenApi()
+                    allowAutoOpenAfterUserNavigation()
                     webView.loadUrl(urlToLoad)
                     urlEditText?.setText(urlToLoad)
                     updateNavigationButtons()
@@ -563,10 +564,8 @@ class WebViewFragment : Fragment() {
                     url != lastWebPageUrl
                 ) {
                     lastWebPageUrl = url
-                    suppressHandoffUrl = null
-                    handedOffToNativePlayer = false
-                    // Do not unlock auto-fullscreen here. Player pages (xiaoyakankan
-                    // ?vod=…) and CF hops change the URL without a user address entry.
+                    // Do not unlock auto-fullscreen or native handoff here.
+                    // Query-only player hops and CF redirects are not a user address entry.
                 }
                 activity?.runOnUiThread {
                     if (isAdded) {
@@ -704,14 +703,11 @@ class WebViewFragment : Fragment() {
                 }
                 // Non-browser: if the page fetches an HLS playlist, prefer native PlaybackFragment
                 // (ExoPlayer stall recovery) over a stuck HTML5/hls.js player.
-                // Skip suppressed (just-failed) stream so returning from player does not loop.
-                if (!isBrowserCard && !handedOffToNativePlayer && isHlsPlaylistUrl(url) &&
-                    !streamUrlsMatch(url, suppressHandoffUrl)
-                ) {
+                // After Back, skip ALL auto-handoff (including a different CDN line)
+                // until the user clicks, refreshes, or opens a new address.
+                if (!isBrowserCard && isHlsPlaylistUrl(url) && shouldAutoHandoff(url)) {
                     activity?.runOnUiThread {
-                        if (isAdded && !handedOffToNativePlayer &&
-                            !streamUrlsMatch(url, suppressHandoffUrl)
-                        ) {
+                        if (isAdded && shouldAutoHandoff(url)) {
                             handOffToNativePlayer(url)
                         }
                     }
@@ -1004,8 +1000,7 @@ class WebViewFragment : Fragment() {
                 .setTitle("Redirect Blocked")
                 .setMessage("The page is trying to navigate automatically to:\n\n$url\n\nDo you want to allow this?")
                 .setPositiveButton("Allow") { _, _ ->
-                    fullscreenGate.onNavigatedToNewPage()
-                    restoreSiteFullscreenApi()
+                    allowAutoOpenAfterUserNavigation()
                     webView.loadUrl(url)
                 }
                 .setNegativeButton("Block", null)
@@ -1016,8 +1011,7 @@ class WebViewFragment : Fragment() {
     private fun goHome() {
         if (isBrowserCard) {
             val home = Utils.getDefaultBrowserPage(requireContext())
-            fullscreenGate.onNavigatedToNewPage()
-            restoreSiteFullscreenApi()
+            allowAutoOpenAfterUserNavigation()
             webView.loadUrl(home)
             urlEditText?.setText(home)
             updateNavigationButtons()
@@ -1095,11 +1089,15 @@ class WebViewFragment : Fragment() {
      * and redirects survive. Back / reconnect-fail pop the player and return here —
      * user does not re-do multi-step navigation from main browse.
      */
+    private fun shouldAutoHandoff(streamUrl: String): Boolean {
+        if (isBrowserCard || handedOffToNativePlayer || isWebViewDestroyed) return false
+        if (!handoffGate.shouldAcceptSiteFullscreenRequest()) return false
+        if (streamUrlsMatch(streamUrl, suppressHandoffUrl)) return false
+        return true
+    }
+
     private fun handOffToNativePlayer(streamUrl: String) {
-        if (handedOffToNativePlayer || !isAdded || isWebViewDestroyed) return
-        if (isBrowserCard) return
-        // Page may keep polling the same dead playlist after user leaves the player.
-        if (streamUrlsMatch(streamUrl, suppressHandoffUrl)) return
+        if (!shouldAutoHandoff(streamUrl) || !isAdded) return
 
         handedOffToNativePlayer = true
         suppressHandoffUrl = streamUrl
@@ -1151,12 +1149,15 @@ class WebViewFragment : Fragment() {
     }
 
     /**
-     * Player was popped — allow a *different* stream to hand off again, but keep
-     * [suppressHandoffUrl] so the dead source does not auto-reopen.
+     * Player was popped. Keep the failed URL suppressed, and also block every
+     * other auto-handoff until a user click / refresh / new address — pages
+     * often fetch a different CDN playlist immediately, which would reopen
+     * the native player (the "fullscreen" trap on Back).
      */
     private fun onReturnedFromNativePlayer() {
         if (isWebViewDestroyed || !isAdded) return
         handedOffToNativePlayer = false
+        handoffGate.onUserExitedFullscreen()
         if (::webView.isInitialized) {
             try {
                 webView.onResume()
@@ -1171,7 +1172,7 @@ class WebViewFragment : Fragment() {
         }
         android.util.Log.i(
             "WebViewFragment",
-            "Returned from native player; suppress re-handoff of: $suppressHandoffUrl"
+            "Returned from native player; auto-handoff locked until user action"
         )
     }
 
@@ -1517,6 +1518,7 @@ class WebViewFragment : Fragment() {
             return
         }
         if (::webView.isInitialized && webView.canGoBack()) {
+            allowAutoOpenAfterUserNavigation()
             webView.goBack()
             updateNavigationButtons()
             return
@@ -1559,6 +1561,18 @@ class WebViewFragment : Fragment() {
     private fun allowSiteFullscreenAfterPageClick() {
         fullscreenGate.onUserPageClick()
         restoreSiteFullscreenApi()
+        // Same click is how the user picks another episode — allow native handoff again.
+        handoffGate.onUserPageClick()
+        handedOffToNativePlayer = false
+    }
+
+    /** URL bar, Home, refresh, history: user left this page on purpose. */
+    private fun allowAutoOpenAfterUserNavigation() {
+        fullscreenGate.onNavigatedToNewPage()
+        restoreSiteFullscreenApi()
+        handoffGate.onNavigatedToNewPage()
+        handedOffToNativePlayer = false
+        suppressHandoffUrl = null
     }
 
     private fun blockSiteFullscreenApi() {
