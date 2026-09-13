@@ -213,17 +213,12 @@ class MainFragment : BrowseSupportFragment() {
                 return
             }
             else -> {
-                Toast.makeText(requireContext(), "Resolving URL...", Toast.LENGTH_SHORT).show()
-
                 Utils.resolveUrl(url, requireContext()) { resolvedUrl, contentType, format, resolution, error, isAudioOnly, audioChannels ->
                     val finalUrlToOpen = if (!resolvedUrl.isNullOrBlank()) resolvedUrl else url
                     // Prefer native player for real streams and IPTV gateways so stall recovery works.
                     // WebView is a last resort for generic web pages (no auto-reconnect for live video).
                     val preferNativePlayer =
-                        Utils.isVideoStream(finalUrlToOpen, contentType) ||
-                            Utils.looksLikeIptvStreamUrl(finalUrlToOpen) ||
-                            format == "M3U8" || format == "MP4" || format == "TS" || format == "RTMP" ||
-                            contentType?.contains("mpegurl", ignoreCase = true) == true
+                        Utils.shouldOpenInNativePlayer(finalUrlToOpen, contentType, format)
 
                     if (!resolvedUrl.isNullOrBlank() && error == null) {
                         Utils.incrementWatchCount(requireContext(), url)
@@ -238,7 +233,7 @@ class MainFragment : BrowseSupportFragment() {
                             openPlaybackFragment(resolvedUrl, contentType)
                         } else {
                             Log.d("MainFragment", "Opening WebViewFragment for resolved URL: $resolvedUrl")
-                            openWebViewFragment(resolvedUrl)
+                            openWebViewFragment(resolvedUrl, skipNativeHandoff = Utils.isHtmlContentType(contentType))
                         }
                     } else {
                         Log.w("MainFragment", "Failed to resolve URL: $url, error: $error, preferNative=$preferNativePlayer")
@@ -248,7 +243,7 @@ class MainFragment : BrowseSupportFragment() {
                             openPlaybackFragment(finalUrlToOpen, contentType)
                         } else {
                             Log.d("MainFragment", "Opening WebViewFragment for URL: $finalUrlToOpen")
-                            openWebViewFragment(finalUrlToOpen)
+                            openWebViewFragment(finalUrlToOpen, skipNativeHandoff = Utils.isHtmlContentType(contentType))
                         }
                     }
                 }
@@ -276,12 +271,19 @@ class MainFragment : BrowseSupportFragment() {
             .commit()
     }
 
-    private fun openWebViewFragment(url: String, isBrowserCard: Boolean = false) {
+    private fun openWebViewFragment(
+        url: String,
+        isBrowserCard: Boolean = false,
+        skipNativeHandoff: Boolean = false
+    ) {
         val fragment = WebViewFragment().apply {
             arguments = Bundle().apply {
                 putString("url", url)
                 if (isBrowserCard) {
                     putBoolean("is_browser_card", true)
+                }
+                if (skipNativeHandoff) {
+                    putBoolean("skip_native_handoff", true)
                 }
             }
         }

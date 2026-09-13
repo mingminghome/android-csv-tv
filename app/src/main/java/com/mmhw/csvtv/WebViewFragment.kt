@@ -52,6 +52,7 @@ class WebViewFragment : Fragment() {
     private lateinit var webProgress: ProgressBar
     private var isToolbarShowing = false
     private var isBrowserCard = false
+    private var skipNativeHandoff = false
     private var urlEditText: EditText? = null
     private var isWebViewDestroyed = false
     private var isAdblockEnabled = true
@@ -136,6 +137,12 @@ class WebViewFragment : Fragment() {
 
         val url = arguments?.getString("url") ?: return
         isBrowserCard = arguments?.getBoolean("is_browser_card", false) ?: false
+        skipNativeHandoff = arguments?.getBoolean("skip_native_handoff", false) ?: false
+        if (skipNativeHandoff) {
+            // This exact URL is not a media container (native player already failed).
+            // Still allow handoff if the page later fetches a real playlist.
+            suppressHandoffUrl = url
+        }
         webView = view.findViewById(R.id.web_view)
         container = view.findViewById(R.id.webview_container)
 
@@ -670,7 +677,7 @@ class WebViewFragment : Fragment() {
                 val hasGesture = request.hasGesture()
 
                 // Non-browser: navigating to a direct stream → native player (has reconnect)
-                if (!isBrowserCard && Utils.isVideoStream(url, null)) {
+                if (!isBrowserCard && Utils.isVideoStream(url, null) && shouldAutoHandoff(url)) {
                     handOffToNativePlayer(url)
                     return true
                 }

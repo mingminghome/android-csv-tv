@@ -619,6 +619,12 @@ class PlaybackFragment : Fragment() {
                             return
                         }
 
+                        // HTML/JSON/unknown bytes — not a media container. Don't retry as video.
+                        if (isUnrecognizedContainer(error)) {
+                            openPageInWebView()
+                            return
+                        }
+
                         // Playlist stuck / source IO: clear any live seek offset before rejoin.
                         if (isPlaylistStuckOrSourceError(error)) {
                             playbackPosition = 0L
@@ -782,6 +788,36 @@ class PlaybackFragment : Fragment() {
         handler.postDelayed({
             if (isAdded) restartPlayer(fullReinit = true)
         }, liveRecoverDelayMs)
+    }
+
+    private fun isUnrecognizedContainer(error: PlaybackException): Boolean {
+        if (error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED ||
+            error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED
+        ) {
+            return true
+        }
+        val blob = errorTextBlob(error)
+        return blob.contains("UnrecognizedInputFormat", ignoreCase = true) ||
+            blob.contains("None of the available extractors", ignoreCase = true)
+    }
+
+    private fun openPageInWebView() {
+        val url = arguments?.getString("video_url") ?: resolvedUrl ?: return
+        if (!isAdded) return
+        Log.w(TAG, "Source is not a playable media container. Opening WebView: $url")
+        handler.removeCallbacks(stallCheckRunnable)
+        handler.removeCallbacks(stablePlaybackCreditRunnable)
+        releasePlayerSafely()
+        player = null
+        val fragment = WebViewFragment().apply {
+            arguments = Bundle().apply {
+                putString("url", url)
+                putBoolean("skip_native_handoff", true)
+            }
+        }
+        parentFragmentManager.beginTransaction()
+            .replace(R.id.fragment_container, fragment)
+            .commitAllowingStateLoss()
     }
 
     private fun isPlaylistStuckOrSourceError(error: PlaybackException): Boolean {

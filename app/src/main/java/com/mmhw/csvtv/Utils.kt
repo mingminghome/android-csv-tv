@@ -176,12 +176,20 @@ object Utils {
      */
     fun looksLikeIptvStreamUrl(url: String?): Boolean {
         if (url.isNullOrBlank()) return false
-        val lower = url.trim().lowercase()
+        val trimmed = url.trim()
+        val lower = trimmed.lowercase()
         if (lower.startsWith("rtmp://")) return true
         if (lower.contains(".m3u8")) return true
         if (lower.endsWith(".mp4") || lower.contains(".mp4?")) return true
         if (lower.endsWith(".ts") || lower.contains(".ts?")) return true
-        if (lower.contains("/live") || lower.contains("playlist")) return true
+
+        val path = urlPath(trimmed)
+        // HTML/document pages (e.g. /liveType.html) are not native streams.
+        if (pathLooksLikeHtmlDocument(path)) return false
+
+        // /live as a path segment (/live, /live/, /live?id=) — not "liveType.html"
+        if (pathHasLiveSegment(path)) return true
+        if (lower.contains("playlist")) return true
         // Common IPTV gateway shapes (php?id=…, streaming proxies)
         if (lower.contains(".php") && (lower.contains("id=") || lower.contains("channel") || lower.contains("stream"))) {
             return true
@@ -190,8 +198,58 @@ object Utils {
         return false
     }
 
+    fun isHtmlContentType(contentType: String?): Boolean {
+        val ct = contentType?.lowercase()?.substringBefore(";")?.trim() ?: return false
+        return ct == "text/html" || ct == "application/xhtml+xml"
+    }
+
+    fun shouldOpenInNativePlayer(url: String, contentType: String?, format: String?): Boolean {
+        val streamFormat = format == "M3U8" || format == "MP4" || format == "TS" || format == "RTMP"
+        val mpegUrl = contentType?.contains("mpegurl", ignoreCase = true) == true
+        val lowerUrl = url.lowercase()
+        val explicitFile = lowerUrl.contains(".m3u8") ||
+            lowerUrl.startsWith("rtmp://") ||
+            lowerUrl.endsWith(".mp4") || lowerUrl.contains(".mp4?") ||
+            lowerUrl.endsWith(".ts") || lowerUrl.contains(".ts?")
+        // Sniffed HTML is a web page. Path heuristics like "/live" must not override that.
+        if (isHtmlContentType(contentType) && !streamFormat && !mpegUrl && !explicitFile) {
+            return false
+        }
+        return isVideoStream(url, contentType) ||
+            looksLikeIptvStreamUrl(url) ||
+            streamFormat ||
+            mpegUrl
+    }
+
+    private fun urlPath(url: String): String {
+        return try {
+            java.net.URI(url.trim()).path.orEmpty().lowercase()
+        } catch (_: Exception) {
+            url.trim().lowercase().substringBefore("?").substringAfter("://").let {
+                val slash = it.indexOf('/')
+                if (slash >= 0) it.substring(slash) else it
+            }
+        }
+    }
+
+    private fun pathLooksLikeHtmlDocument(path: String): Boolean {
+        return path.endsWith(".html") || path.endsWith(".htm") || path.endsWith(".xhtml") ||
+            path.endsWith(".asp") || path.endsWith(".aspx") || path.endsWith(".jsp")
+    }
+
+    private fun pathHasLiveSegment(path: String): Boolean {
+        val parts = path.trim('/').split('/').filter { it.isNotEmpty() }
+        return parts.any { it == "live" }
+    }
+
     fun isVideoStream(url: String, contentType: String?): Boolean {
         val normalizedUrl = url.trim().lowercase()
+        // HTML documents are not native video, even if the path contains "live".
+        if (isHtmlContentType(contentType) && !normalizedUrl.contains(".m3u8") &&
+            !normalizedUrl.startsWith("rtmp://")
+        ) {
+            return false
+        }
         // Check for common video file extensions / stream URL shapes
         if (normalizedUrl.endsWith(".mp4") ||
             normalizedUrl.endsWith(".m3u8") ||
@@ -518,10 +576,8 @@ object Utils {
                             lower.contains("blocked")
                         } ?: false
 
-                        // IPTV gateways (php?id=) often return intermittent HTML errors; still mark as stream
-                        // so the native player can try (and recover) instead of opening a WebView player page.
                         val isRecognizedVideoStream = isStreamBasedOnBody ||
-                            isVideoStream(finalResolvedUrl, determinedContentType) ||
+                            (!looksLikeHtmlPage && isVideoStream(finalResolvedUrl, determinedContentType)) ||
                             (looksLikeIptvStreamUrl(finalResolvedUrl) && !looksLikeHtmlPage)
 
                         Log.d(
@@ -533,10 +589,8 @@ object Utils {
 
                         val finalError = if (!isRecognizedVideoStream) {
                             when {
-                                looksLikeHtmlPage && !looksLikeIptvStreamUrl(finalResolvedUrl) ->
-                                    "Resolved to web page instead of video stream (likely error/login/blocked page)"
-                                // IPTV-like URL that landed on HTML: no hard error — caller may still try native
-                                looksLikeHtmlPage && looksLikeIptvStreamUrl(finalResolvedUrl) -> null
+                                looksLikeHtmlPage ->
+                                    "Resolved to web page instead of video stream"
                                 !getResponse.isSuccessful -> "Content at resolved URL not successfully loaded: HTTP ${getResponse.code}"
                                 else -> "URL did not resolve to a recognizable video or audio stream"
                             }
