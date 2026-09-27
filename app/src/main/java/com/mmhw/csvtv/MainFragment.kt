@@ -175,6 +175,12 @@ class MainFragment : BrowseSupportFragment() {
         })
     }
 
+    fun playVideoFromDeepLink(url: String, title: String?) {
+        if (!isAdded) return
+        val playTitle = title?.takeIf { it.isNotBlank() } ?: url
+        handleVideoClick(Video(playTitle, url, null))
+    }
+
     private fun handleVideoClick(video: Video) {
         val url = video.url?.trim() ?: ""
         val title = video.title?.trim() ?: ""
@@ -318,7 +324,9 @@ class MainFragment : BrowseSupportFragment() {
             if (!isAdded || isDetached) return@runOnUiThread
 
             if (videos.isNullOrEmpty() || error != null) {
+                this.videos = emptyList()
                 showSettingsAndRefreshOnly()
+                context?.applicationContext?.let { HomeScreenPublisher.publish(it, emptyList()) }
             } else {
                 this.videos = videos
                 context?.let { ctx ->
@@ -332,6 +340,7 @@ class MainFragment : BrowseSupportFragment() {
                             video.audioChannels = cached.audioChannels
                         }
                     }
+                    HomeScreenPublisher.publish(ctx.applicationContext, videos)
                 }
                 updateRows()
                 startVideoPrecheck()

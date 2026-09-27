@@ -5,6 +5,7 @@ data class Video(
     val url: String,
     val thumbnailUrl: String?,
     val groupName: String = "Default",
+    val isFav: Boolean = false,
     var isChecking: Boolean = false,
     var isValid: Boolean? = null,
     var pingMs: Long? = null,

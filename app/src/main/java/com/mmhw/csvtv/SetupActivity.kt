@@ -722,6 +722,7 @@ class SetupActivity : FragmentActivity() {
 
                 saveSheetLink(linkToSave)
                 addCsvToHistory(linkToSave)
+                HomeScreenPublisher.publish(applicationContext, videos)
                 showToast("Sheet loaded successfully with ${videos.size} videos.")
                 navigateToMainActivity()
             } else {

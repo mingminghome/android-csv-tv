@@ -94,6 +94,11 @@ object AdBlocker {
             return false
         }
 
+        // Verification widgets must load or the page loops on the check.
+        if (WebChallengePolicy.isChallengeUrl(url)) {
+            return false
+        }
+
         val host = extractHost(url) ?: extractHost(lower)
         if (host != null && hostMatches(host)) {
             return true
@@ -276,6 +281,8 @@ object AdBlocker {
                 window.__csvtvAbInstalled = true;
 
                 var CSS = $cssJsLiteral;
+                ${WebChallengePolicy.overlayGuardJs()}
+
                 function ensureStyle() {
                   var s = document.getElementById('csvtv-ab-css');
                   if (!s) {
@@ -307,6 +314,7 @@ object AdBlocker {
                 function looksLikeSpamOverlay(el) {
                   if (!el || el === document.body || el === document.documentElement) return false;
                   if (el.id === 'csvtv-ab-css') return false;
+                  if (isHumanCheck(el)) return false;
                   if (hasMedia(el)) return false;
                   var st;
                   try { st = window.getComputedStyle(el); } catch(e) { return false; }
@@ -364,6 +372,7 @@ object AdBlocker {
                 }
 
                 function sweep() {
+                  if (isChallengePage()) return;
                   ensureStyle();
                   try {
                     var nodes = document.querySelectorAll('body *');
@@ -380,25 +389,29 @@ object AdBlocker {
 
                 window.__csvtvAbSweep = sweep;
 
-                // Block window.open spam when possible (user gesture still needed for some)
-                try {
-                  var realOpen = window.open;
-                  window.open = function() {
-                    try {
-                      console.log('csvtv-ab: blocked window.open');
-                    } catch(e) {}
-                    return null;
-                  };
-                  window.__csvtvAbRealOpen = realOpen;
-                } catch(e) {}
+                if (!isChallengePage()) {
+                  // Block window.open spam when possible (user gesture still needed for some)
+                  try {
+                    var realOpen = window.open;
+                    window.open = function() {
+                      try {
+                        console.log('csvtv-ab: blocked window.open');
+                      } catch(e) {}
+                      return null;
+                    };
+                    window.__csvtvAbRealOpen = realOpen;
+                  } catch(e) {}
 
-                // alert/confirm spam
-                try {
-                  window.alert = function(){};
-                  window.confirm = function(){ return true; };
-                } catch(e) {}
+                  // alert/confirm spam
+                  try {
+                    window.alert = function(){};
+                    window.confirm = function(){ return true; };
+                  } catch(e) {}
+                }
 
-                ensureStyle();
+                if (!isChallengePage()) {
+                  ensureStyle();
+                }
                 if (document.readyState === 'loading') {
                   document.addEventListener('DOMContentLoaded', sweep);
                 } else {

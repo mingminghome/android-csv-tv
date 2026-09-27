@@ -26,8 +26,8 @@ android {
         applicationId = "com.mmhw.csvtv"
         minSdk = 21
         targetSdk = 35
-        versionCode = 13
-        versionName = "1.1.2"
+        versionCode = 14
+        versionName = "1.1.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -91,6 +91,7 @@ dependencies {
 
     // Leanback for TV UI
     implementation(libs.androidx.leanback)
+    implementation(libs.androidx.tvprovider)
     implementation("androidx.cardview:cardview:1.0.0")
 
     // Media3 for ExoPlayer (aligned with Jellyfin FFmpeg decoder build)

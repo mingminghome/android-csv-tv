@@ -8,7 +8,7 @@ package com.mmhw.csvtv
  * fetch another playlist as soon as Back leaves the native player.
  * After the user dismisses that surface, later site-initiated opens are
  * ignored until they click the page, press a control, or type a new
- * address. Automatic loads (Cloudflare hops, query-only player updates)
+ * address. Automatic loads (verification hops, query-only player updates)
  * must not unlock.
  */
 class WebFullscreenGate(

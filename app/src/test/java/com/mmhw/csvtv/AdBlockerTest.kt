@@ -65,6 +65,26 @@ class AdBlockerTest {
     }
 
     @Test
+    fun verificationResources_neverBlockedEvenIfListed() {
+        AdBlocker.loadFromLinesForTest(
+            listOf(
+                "challenges.example.net",
+                "hcaptcha.com",
+                "doubleclick.net"
+            )
+        )
+        assertFalse(
+            AdBlocker.shouldBlock("https://challenges.example.net/turnstile/v0/api.js")
+        )
+        assertFalse(
+            AdBlocker.shouldBlock(
+                "https://watch.example.com/cdn-cgi/challenge-platform/scripts/jsd/main.js"
+            )
+        )
+        assertTrue(AdBlocker.shouldBlock("https://ad.doubleclick.net/foo.js"))
+    }
+
+    @Test
     fun nonHttpSchemes_notBlocked() {
         AdBlocker.loadFromLinesForTest(listOf("doubleclick.net"))
         assertFalse(AdBlocker.shouldBlock("about:blank"))

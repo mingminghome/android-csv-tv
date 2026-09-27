@@ -15,8 +15,10 @@ import android.view.ViewGroup
 import android.app.AlertDialog
 import android.text.InputType
 import android.view.inputmethod.EditorInfo
+import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Button
@@ -368,6 +370,7 @@ class WebViewFragment : Fragment() {
         if (!isAdblockEnabled || isWebViewDestroyed || !::webView.isInitialized) return
         val ctx = context ?: return
         if (!AdBlocker.isOverlayBlockingEnabled(ctx)) return
+        if (WebChallengePolicy.isChallengeUrl(webView.url)) return
         try {
             webView.evaluateJavascript(AdBlocker.buildOverlayCleanerScript(), null)
         } catch (e: Exception) {
@@ -554,9 +557,14 @@ class WebViewFragment : Fragment() {
             // Disable offscreen pre-raster to reduce EGL fence sync issues on some devices/emulators
             offscreenPreRaster = false
             // Desktop by default so mobile players (auto-fullscreen + tiny episode lists)
-            // are not served on TV.
-            userAgentString = if (isDesktopMode) DESKTOP_USER_AGENT else null
+            // are not served on TV. Keep the real WebView Chrome/Android tokens so
+            // bot-check scripts see a UA that matches this engine.
+            userAgentString = if (isDesktopMode) desktopUserAgent(webView.context) else null
         }
+
+        val cookieManager = CookieManager.getInstance()
+        cookieManager.setAcceptCookie(true)
+        cookieManager.setAcceptThirdPartyCookies(webView, true)
 
         webView.addJavascriptInterface(AndroidBridge(this), "AndroidBridge")
         webView.keepScreenOn = true
@@ -609,6 +617,10 @@ class WebViewFragment : Fragment() {
                 super.onPageFinished(view, url)
                 isLoading = false
                 initialLoadCompleted = true
+                try {
+                    CookieManager.getInstance().flush()
+                } catch (_: Exception) {
+                }
                 activity?.runOnUiThread {
                     if (isAdded) {
                         btnWebRefresh.setImageResource(R.drawable.ic_refresh_icon)
@@ -675,6 +687,12 @@ class WebViewFragment : Fragment() {
                 val url = request?.url?.toString() ?: return false
                 val isRedirect = request.isRedirect
                 val hasGesture = request.hasGesture()
+                val isMainFrame = request.isForMainFrame
+
+                // Verification iframes must load in Chromium.
+                if (!isMainFrame) {
+                    return false
+                }
 
                 // Non-browser: navigating to a direct stream → native player (has reconnect)
                 if (!isBrowserCard && Utils.isVideoStream(url, null) && shouldAutoHandoff(url)) {
@@ -687,13 +705,20 @@ class WebViewFragment : Fragment() {
                     return false
                 }
 
-                // Auto-block ad related redirects/force redirects
-                if (isAdUrl(url)) {
+                // Auto-block ad related redirects/force redirects, but never verification URLs
+                if (isAdUrl(url) && !WebChallengePolicy.isChallengeUrl(url)) {
                     return true
                 }
 
-                // Allow standard explicit clicks (hasGesture = true and not an HTTP redirect)
-                if (hasGesture && !isRedirect) {
+                val currentUrl = view?.url ?: lastWebPageUrl
+                if (WebChallengePolicy.shouldAllowAutoNavigation(
+                        currentUrl,
+                        url,
+                        isRedirect,
+                        hasGesture,
+                        isMainFrame
+                    )
+                ) {
                     return false
                 }
 
@@ -1326,7 +1351,8 @@ class WebViewFragment : Fragment() {
     private fun applyDesktopMode(enabled: Boolean, reload: Boolean, announce: Boolean) {
         isDesktopMode = enabled
         if (::webView.isInitialized) {
-            webView.settings.userAgentString = if (enabled) DESKTOP_USER_AGENT else null
+            webView.settings.userAgentString =
+                if (enabled) desktopUserAgent(webView.context) else null
             webView.settings.useWideViewPort = true
             webView.settings.loadWithOverviewMode = true
         }
@@ -2138,9 +2164,12 @@ class WebViewFragment : Fragment() {
             webView.clearCache(true)
             webView.loadUrl("about:blank")
             webView.removeAllViews()
-            android.webkit.WebStorage.getInstance().deleteAllData()
-            android.webkit.CookieManager.getInstance().removeAllCookies(null)
-            android.webkit.CookieManager.getInstance().flush()
+            // Keep CookieManager / WebStorage so verification cookies survive
+            // closing the browser. Clearing them forces a new check on the next visit.
+            try {
+                CookieManager.getInstance().flush()
+            } catch (_: Exception) {
+            }
             webView.destroy()
         } catch (e: Exception) {
             // Ignore errors during shutdown to avoid DeadObject or other during window exit
@@ -2148,9 +2177,25 @@ class WebViewFragment : Fragment() {
     }
 
     companion object {
-        private const val DESKTOP_USER_AGENT =
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
-                "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        /**
+         * Desktop layout without claiming to be a different OS or browser.
+         * A mismatched UA makes bot-check scripts reject the session and retry.
+         */
+        fun desktopUserAgent(context: Context): String {
+            val def = try {
+                WebSettings.getDefaultUserAgent(context)
+            } catch (_: Exception) {
+                ""
+            }
+            if (def.isBlank()) {
+                return "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 " +
+                    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            }
+            return def
+                .replace(" Mobile", "")
+                .replace("Mobile ", "")
+                .replace("; wv", "")
+        }
 
         private const val DESKTOP_VIEWPORT_JS = """
             (function() {

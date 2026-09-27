@@ -1,4 +1,5 @@
 <resources>
     <string name="app_name">TV,</string>
     <string name="thumbnail_description">Video thumbnail</string>
+    <string name="home_channel_description">Videos from your CSV</string>
 </resources>

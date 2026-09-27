@@ -5,6 +5,7 @@ junit = "4.13.2"
 junitVersion = "1.2.1"
 espressoCore = "3.6.1"
 leanback = "1.0.0"
+tvprovider = "1.1.0"
 okhttp = "4.12.0"
 opencsv = "5.9"
 glide = "4.16.0"
@@ -26,6 +27,7 @@ androidx-lifecycle-runtime-ktx = { group = "androidx.lifecycle", name = "lifecyc
 
 # Leanback for TV UI
 androidx-leanback = { group = "androidx.leanback", name = "leanback", version.ref = "leanback" }
+androidx-tvprovider = { group = "androidx.tvprovider", name = "tvprovider", version.ref = "tvprovider" }
 
 # Media3 for ExoPlayer
 androidx-media3-exoplayer = { module = "androidx.media3:media3-exoplayer", version.ref = "media3" }

@@ -10,6 +10,7 @@
 ## Features
 
 ### 📺 Leanback & Custom UI
+- **Android TV Home Row**: Publishes posters to the Android TV / Google TV home screen (API 26+). A CSV `fav` mark chooses the lead card; otherwise the first fetched row is used. Empty or failed catalogs clear those home-screen cards.
 - **Leanback Grid Layout**: TV-optimized interface utilizing Android's Leanback framework to display channel groups and card lists.
 - **Card Icon Polish**: No-thumbnail cards, special cards (Settings, Refresh, Browser, Update), and broken-image cards now use consistent 1.5× scaled icons with CENTER_INSIDE scaling for proper alignment.
 - **Adaptive Scrolling Badge Ticker**: Card metadata badges (Resolution, Format, Latency, Audio-Only, Sound Channels, Domain Source) are center-aligned if they fit, or smoothly auto-scrolled via a self-reversing ticker animation when focused.
@@ -102,13 +103,16 @@ The CSV file (provided via remote URL, e.g. Google Sheets or your own server) mu
 - `groupName`: The group/category of the video (e.g., "Movies", "Live TV").
 - `title`: The title of the video or webpage.
 - `url`: The URL of the video stream (e.g., `.m3u8`, `.mp4`, `rtmp://`) or webpage (e.g., `https://example.com`).
-- `thumbnailUrl`: (Optional) URL of the video thumbnail.
+- `thumbnailUrl`: (Optional) URL of the video thumbnail. Used on in-app cards and as the Android TV home-screen poster.
+- `fav`: (Optional) Any non-empty value (`true`, `1`, `x`, …) marks the row as a favorite. The home-screen row leads with the first favorite. If every `fav` cell is blank, the first fetched data row is used.
 
 Example CSV:
 
-    groupName,title,url,thumbnailUrl  
-    Video,Big Buck Bunny,https://bitdash-a.akamaihd.net/content/sintel/hls/playlist.m3u8,https://vz-48f70360-cc0.b-cdn.net/003223b9-e5e4-4047-8afd-7659d39924bd/thumbnail_8bbe7aa2.jpg  
-    Web,Big Buck Bunny@Wiki,https://en.wikipedia.org/wiki/Big_Buck_Bunny, 
+    groupName,title,url,thumbnailUrl,fav
+    Video,Big Buck Bunny,https://bitdash-a.akamaihd.net/content/sintel/hls/playlist.m3u8,https://vz-48f70360-cc0.b-cdn.net/003223b9-e5e4-4047-8afd-7659d39924bd/thumbnail_8bbe7aa2.jpg,true
+    Web,Big Buck Bunny@Wiki,https://en.wikipedia.org/wiki/Big_Buck_Bunny,,
+
+If the sheet cannot be loaded, or it parses to zero videos, the app keeps the Settings / Browser / Refresh cards and removes posters from the Android TV home screen so stale recommendations are not left behind.
 
 
 
@@ -121,6 +125,8 @@ Example CSV:
 - **`WebViewFragment.kt`**: Powers the in-app browser with pointer navigation, toolbar, and adblock.
 - **`CardPresenter.kt`**: Custom card rendering (1.5× icons for no-thumbnail/special/broken cards).
 - **`Utils.kt`**: Utility functions for fetching/parsing CSV data, version checking, and URL resolution.
+- **`VideoCatalog.kt`**: CSV column parsing, `fav` handling, and home-screen program ordering.
+- **`HomeScreenPublisher.kt`**: Android TV home-screen preview channel (posters + deep link into playback).
 
 ## Known Issues
 

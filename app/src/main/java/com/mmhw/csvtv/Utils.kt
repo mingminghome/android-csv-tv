@@ -1,10 +1,8 @@
 package com.mmhw.csvtv
 
 import android.content.Context
-import com.opencsv.CSVReader
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import java.io.StringReader
 import android.net.Uri
 import android.util.Log
 import java.io.IOException
@@ -128,46 +126,14 @@ object Utils {
     }
 
     private fun parseCsvData(csvData: String, callback: (List<Video>, String?) -> Unit) {
-        val videos = mutableListOf<Video>()
-
-        try {
-            val csvReader = CSVReader(StringReader(csvData))
-            val headers = csvReader.readNext()
-            if (headers == null) {
-                Log.e("Utils", "CSV is empty or invalid")
-                callback(emptyList(), "Invalid CSV format: Empty file")
-                return
-            }
-            val titleIndex = headers.indexOf("title")
-            val urlIndex = headers.indexOf("url")
-            val thumbnailUrlIndex = headers.indexOf("thumbnailUrl")
-            val groupNameIndex = headers.indexOf("groupName")
-
-            if (titleIndex == -1 || urlIndex == -1 || groupNameIndex == -1) {
-                Log.e("Utils", "Invalid CSV format: Missing required columns (title, url, groupName)")
-                callback(emptyList(), "Invalid CSV format: Missing required columns")
-                return
-            }
-
-            var row: Array<String>?
-            while (csvReader.readNext().also { row = it } != null) {
-                row?.let {
-                    val title = if (titleIndex < it.size) it[titleIndex] else ""
-                    val url = if (urlIndex < it.size) it[urlIndex] else ""
-                    val thumbnailUrl = if (thumbnailUrlIndex != -1 && thumbnailUrlIndex < it.size) it[thumbnailUrlIndex] else null
-                    val groupName = if (groupNameIndex < it.size) it[groupNameIndex] else "Default"
-
-                    if (title.isNotBlank() && url.isNotBlank()) {
-                        videos.add(Video(title, url, thumbnailUrl, groupName))
-                    }
-                }
-            }
-            Log.d("Utils", "Parsed ${videos.size} videos from CSV")
-            callback(videos, null)
-        } catch (e: Exception) {
-            Log.e("Utils", "Error parsing CSV", e)
-            callback(emptyList(), "Error parsing CSV: ${e.message}")
+        val result = VideoCatalog.parseCsv(csvData)
+        if (result.error != null) {
+            Log.e("Utils", result.error)
+            callback(emptyList(), result.error)
+            return
         }
+        Log.d("Utils", "Parsed ${result.videos.size} videos from CSV")
+        callback(result.videos, null)
     }
 
     /**
