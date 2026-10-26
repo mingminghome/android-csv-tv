@@ -545,15 +545,18 @@ class WebViewFragment : Fragment() {
             javaScriptEnabled = true
             loadWithOverviewMode = true
             useWideViewPort = true
-            builtInZoomControls = false
+            // Zoom must stay enabled for overview-mode to shrink wide desktop
+            // layouts to the TV view. Hide the +/- chrome; D-pad edge-pan is
+            // the user-facing control.
+            builtInZoomControls = true
             displayZoomControls = false
+            setSupportZoom(true)
             mediaPlaybackRequiresUserGesture = false
             domStorageEnabled = true
             allowFileAccess = true
             setSupportMultipleWindows(true)
             javaScriptCanOpenWindowsAutomatically = true
             allowContentAccess = true
-            setSupportZoom(false)
             // Disable offscreen pre-raster to reduce EGL fence sync issues on some devices/emulators
             offscreenPreRaster = false
             // Desktop by default so mobile players (auto-fullscreen + tiny episode lists)
@@ -561,6 +564,9 @@ class WebViewFragment : Fragment() {
             // bot-check scripts see a UA that matches this engine.
             userAgentString = if (isDesktopMode) desktopUserAgent(webView.context) else null
         }
+        webView.setInitialScale(0)
+        webView.isHorizontalScrollBarEnabled = true
+        webView.isVerticalScrollBarEnabled = true
 
         val cookieManager = CookieManager.getInstance()
         cookieManager.setAcceptCookie(true)
@@ -573,6 +579,7 @@ class WebViewFragment : Fragment() {
             override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
                 super.onPageStarted(view, url, favicon)
                 isLoading = true
+                injectDesktopViewportIfNeeded()
                 // Navigating to a different page: allow handoff of streams again.
                 if (!url.isNullOrBlank() &&
                     !url.startsWith("about:") &&
@@ -768,6 +775,9 @@ class WebViewFragment : Fragment() {
                 } else {
                     webProgress.visibility = View.VISIBLE
                     webProgress.progress = newProgress
+                }
+                if (newProgress >= 40) {
+                    injectDesktopViewportIfNeeded()
                 }
             }
 
@@ -1355,6 +1365,9 @@ class WebViewFragment : Fragment() {
                 if (enabled) desktopUserAgent(webView.context) else null
             webView.settings.useWideViewPort = true
             webView.settings.loadWithOverviewMode = true
+            webView.settings.setSupportZoom(true)
+            webView.settings.builtInZoomControls = true
+            webView.settings.displayZoomControls = false
         }
         updateDesktopToggleUi()
         if (announce) {
@@ -1381,14 +1394,14 @@ class WebViewFragment : Fragment() {
     private fun injectDesktopViewportIfNeeded() {
         if (!isDesktopMode || isWebViewDestroyed || !::webView.isInitialized) return
         try {
-            webView.evaluateJavascript(DESKTOP_VIEWPORT_JS, null)
+            webView.evaluateJavascript(WebViewDisplayPolicy.desktopViewportJs(), null)
         } catch (_: Exception) {
         }
     }
 
     private fun updateContentDimensions() {
         if (isWebViewDestroyed || !isAdded || view == null) return
-        webView.evaluateJavascript("(function() { return { width: document.body.scrollWidth, height: document.body.scrollHeight }; })();") { value ->
+        webView.evaluateJavascript(WebViewDisplayPolicy.contentSizeJs()) { value ->
             if (isWebViewDestroyed || !isAdded || view == null) return@evaluateJavascript
             try {
                 val json = JSONObject(value)
@@ -1397,7 +1410,7 @@ class WebViewFragment : Fragment() {
             } catch (e: Exception) {
                 if (!isWebViewDestroyed && isAdded && view != null) {
                     contentWidth = webView.width
-                    contentHeight = (webView.contentHeight * webView.scaleY).toInt()
+                    contentHeight = webView.contentHeight
                 }
             }
         }
@@ -1735,52 +1748,36 @@ class WebViewFragment : Fragment() {
 
             val scrollThresholdPx = 40f * density
 
-            if (deltaX < 0 && pointerX < scrollThresholdPx && webView.scrollX > 0) {
-                webView.scrollBy(-pointerSpeed.toInt(), 0)
-            } else if (deltaX > 0 && pointerX > container.width - scrollThresholdPx) {
-                val maxScrollX = (contentWidth * webView.scaleX - container.width).toInt().coerceAtLeast(0)
-                if (webView.scrollX < maxScrollX) webView.scrollBy(pointerSpeed.toInt(), 0)
+            // Edge pan: the pointer is clamped to the view, so the only way to
+            // reach clipped page content is to scroll while parked at an edge.
+            var dx = 0
+            var dy = 0
+            if (deltaX < 0 && pointerX <= scrollThresholdPx) {
+                dx = -pointerSpeed.toInt()
+            } else if (deltaX > 0 && pointerX >= container.width - scrollThresholdPx) {
+                dx = pointerSpeed.toInt()
+            }
+            if (deltaY < 0 && pointerY <= scrollThresholdPx) {
+                dy = -pointerSpeed.toInt()
+            } else if (deltaY > 0 && pointerY >= container.height - scrollThresholdPx) {
+                dy = pointerSpeed.toInt()
             }
 
-            // Vertical edge scroll for page content.
-            // Do NOT guard with isPointerInToolbar: this allows scrolling up the page
-            // even after the toolbar auto-shows when the pointer reaches the top.
-            var scrollAmount = 0
-            if (pointerY < scrollThresholdPx) {
-                scrollAmount = -pointerSpeed.toInt()
-            } else if (pointerY > container.height - scrollThresholdPx) {
-                scrollAmount = pointerSpeed.toInt()
-            }
-
-            if (scrollAmount != 0) {
+            if (dx != 0 || dy != 0) {
                 val cssX = (pointerX / density).toInt()
                 val cssY = (pointerY / density).toInt()
-                val js = """
-                    (function() {
-                        var ptX = $cssX;
-                        var ptY = $cssY;
-                        var amount = $scrollAmount;
-                        var el = document.elementFromPoint(ptX, ptY);
-                        var scrolled = false;
-                        while (el && el !== document.documentElement && el !== document.body) {
-                            var style = window.getComputedStyle(el);
-                            var isScrollable = (style.overflowY === 'auto' || style.overflowY === 'scroll' || el.scrollHeight > el.clientHeight);
-                            if (isScrollable && el.scrollHeight > el.clientHeight) {
-                                var oldScroll = el.scrollTop;
-                                el.scrollTop += amount;
-                                if (Math.abs(el.scrollTop - oldScroll) > 0.5) {
-                                    scrolled = true;
-                                    break;
-                                }
-                            }
-                            el = el.parentElement;
-                        }
-                        if (!scrolled) {
-                            window.scrollBy(0, amount);
-                        }
-                    })();
-                """.trimIndent()
-                webView.evaluateJavascript(js, null)
+                try {
+                    webView.evaluateJavascript(
+                        WebViewDisplayPolicy.pageScrollJs(cssX, cssY, dx, dy),
+                        null
+                    )
+                } catch (_: Exception) {
+                }
+                val nativeDx = if (dx != 0 && webView.canScrollHorizontally(dx)) dx else 0
+                val nativeDy = if (dy != 0 && webView.canScrollVertically(dy)) dy else 0
+                if (nativeDx != 0 || nativeDy != 0) {
+                    webView.scrollBy(nativeDx, nativeDy)
+                }
             }
         }
         updatePointerPosition()
@@ -2196,20 +2193,6 @@ class WebViewFragment : Fragment() {
                 .replace("Mobile ", "")
                 .replace("; wv", "")
         }
-
-        private const val DESKTOP_VIEWPORT_JS = """
-            (function() {
-                try {
-                    var meta = document.querySelector('meta[name="viewport"]');
-                    if (!meta) {
-                        meta = document.createElement('meta');
-                        meta.setAttribute('name', 'viewport');
-                        (document.head || document.documentElement).appendChild(meta);
-                    }
-                    meta.setAttribute('content', 'width=1280, initial-scale=1.0');
-                } catch (e) {}
-            })();
-        """
 
         /**
          * Same-origin players re-call requestFullscreen() on play / fullscreenchange.

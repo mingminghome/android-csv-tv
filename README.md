@@ -37,7 +37,8 @@
 
 ### 🌐 Interactive WebView Web Engine
 - **Dedicated Browser Card**: A special card in the main UI for quick access to the in-app browser.
-- **TV Pointer Navigation**: Dedicated D-pad pointer control that automatically snaps to the nearest clickable element. Improved behavior (toolbar no longer forces visibility on load for better content interaction).
+- **TV Pointer Navigation**: Dedicated D-pad pointer control that automatically snaps to the nearest clickable element. Improved behavior (toolbar no longer forces visibility on load for better content interaction). Hold the pointer at the screen edge to pan pages that are wider or taller than the TV view.
+- **Desktop Page Fit**: Desktop sites scale to the TV view instead of clipping at a fixed width. Remaining overflow can be panned with the D-pad.
 - **WebView Action Toolbar**: Toggleable toolbar (Back, Forward, Reload, Home, Close, Desktop Mode, Auto-Fullscreen) with navigation button snapping. Adblock toggle uses Speaker Notes / Speaker Notes Off icons.
 - **TV-friendly Adblock**: Manage blocking on-device under **Settings → Adblock** — *My blocked sites* (add/remove domains), *List packs* (toggle trusted filter packs that auto-download), *Page popups & overlays* (CSS + JS cleaner for in-site spam modals), and browser long-press on the adblock button to block the current site. Bundled/remote list files are internal; users never edit list files on the device.
 - **Security Redirect Alert**: Prompts the user with a confirmation dialog before allowing external webpage redirects.

@@ -348,13 +348,15 @@ object AdBlocker {
                     // Only clear overflow lock if body is non-scrollable (common interstitial trick)
                     var stB = window.getComputedStyle(b);
                     var stH = window.getComputedStyle(de);
-                    if (stB && (stB.overflow === 'hidden' || stB.overflowY === 'hidden')) {
+                    if (stB && (stB.overflow === 'hidden' || stB.overflowY === 'hidden' || stB.overflowX === 'hidden')) {
                       b.style.setProperty('overflow', 'auto', 'important');
                       b.style.setProperty('overflow-y', 'auto', 'important');
+                      b.style.setProperty('overflow-x', 'auto', 'important');
                     }
-                    if (stH && (stH.overflow === 'hidden' || stH.overflowY === 'hidden')) {
+                    if (stH && (stH.overflow === 'hidden' || stH.overflowY === 'hidden' || stH.overflowX === 'hidden')) {
                       de.style.setProperty('overflow', 'auto', 'important');
                       de.style.setProperty('overflow-y', 'auto', 'important');
+                      de.style.setProperty('overflow-x', 'auto', 'important');
                     }
                     // Clear common scroll-lock classes
                     b.classList.remove('modal-open','no-scroll','noscroll','overflow-hidden','body-scroll-lock');
