@@ -26,8 +26,8 @@ android {
         applicationId = "com.mmhw.csvtv"
         minSdk = 21
         targetSdk = 35
-        versionCode = 15
-        versionName = "1.1.4"
+        versionCode = 16
+        versionName = "1.1.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -122,6 +122,7 @@ dependencies {
 
     // AppCompat for SetupActivity
     implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("androidx.webkit:webkit:1.11.0")
 
     // Test dependencies
     testImplementation(libs.junit)

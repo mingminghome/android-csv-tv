@@ -1,6 +1,8 @@
 package com.mmhw.csvtv
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.webkit.WebResourceResponse
 import okhttp3.OkHttpClient
@@ -75,6 +77,7 @@ object AdBlocker {
     private var loaded = false
 
     private val updateInProgress = AtomicBoolean(false)
+    private val autoUpdateScheduled = AtomicBoolean(false)
 
     private val lock = Any()
 
@@ -184,7 +187,14 @@ object AdBlocker {
         if (!loaded) {
             reload(app)
         }
-        maybeAutoUpdate(app)
+        scheduleAutoUpdate(app)
+    }
+
+    private fun scheduleAutoUpdate(context: Context) {
+        if (!autoUpdateScheduled.compareAndSet(false, true)) return
+        Handler(Looper.getMainLooper()).postDelayed({
+            maybeAutoUpdate(context)
+        }, CatalogNetworkPolicy.ADBLOCK_AUTO_UPDATE_DELAY_MS)
     }
 
     fun reload(context: Context) {
@@ -432,11 +442,10 @@ object AdBlocker {
                 } catch(e) {}
 
                 // Delayed popups (many fire 1–5s after load)
-                var times = [500, 1500, 3000, 6000, 10000];
+                var times = [500, 1500, 3000, 6000, 10000, 15000];
                 for (var t = 0; t < times.length; t++) {
                   setTimeout(sweep, times[t]);
                 }
-                setInterval(sweep, 8000);
               } catch(e) {
                 try { console.log('csvtv-ab error', e); } catch(x) {}
               }
@@ -562,6 +571,8 @@ object AdBlocker {
         hosts = emptySet()
         urlContains = emptyArray()
         loaded = false
+        autoUpdateScheduled.set(false)
+        updateInProgress.set(false)
     }
 
     private fun isPlausibleHost(host: String): Boolean {

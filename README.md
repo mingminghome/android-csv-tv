@@ -13,13 +13,14 @@
 - **Android TV Home Row**: Publishes posters to the Android TV / Google TV home screen (API 26+). A CSV `fav` mark chooses the lead card; otherwise the first fetched row is used. Empty or failed catalogs clear those home-screen cards.
 - **Leanback Grid Layout**: TV-optimized interface utilizing Android's Leanback framework to display channel groups and card lists.
 - **Card Icon Polish**: No-thumbnail cards, special cards (Settings, Refresh, Browser, Update), and broken-image cards now use consistent 1.5× scaled icons with CENTER_INSIDE scaling for proper alignment.
+- **Card Open Feedback**: Selecting a title dims that card and shows a spinner until the player or browser opens. A second click on the same URL is ignored while that open is in flight.
 - **Adaptive Scrolling Badge Ticker**: Card metadata badges (Resolution, Format, Latency, Audio-Only, Sound Channels, Domain Source) are center-aligned if they fit, or smoothly auto-scrolled via a self-reversing ticker animation when focused.
 - **Domain Source & Audio Badges**: Shows the host domain name of the stream source and audio configuration (Stereo, 5.1, Mono), enriched with clean vector icons.
 - **Guided CSV Setup Screen**: Dedicated TV setup interface (2-column layout) to input remote CSV spreadsheet URLs or Google Sheets IDs, featuring real-time verification and persistent storage. Separate titled "About" section and 2-column Utilities. Close button properly aligned with content margins.
 
 ### ⚡ Smart Live Stream Detection & Pre-check
 - **Intelligent URL Resolver**: Automatically resolves shortened links (tinyurl, bit.ly, etc.) and redirect links.
-- **Real-Time Focused Card Refresh**: Hovering focus over a grid card automatically queries fresh network metrics (latency, format, status). Uses a **network back-off schedule** (10-second initial update, transitioning to 1-minute cycles) to prevent server overload.
+- **Real-Time Focused Card Refresh**: Hovering focus over a grid card queries fresh network metrics (latency, format, status) after 30 seconds, then every 2 minutes. Catalog HEAD precheck pauses while a title is playing or the in-app browser is open.
 - **Thread-Safe Sniffing Buffer**: Optimizes GET sniff requests by reading a maximum of **8KB** from infinite live stream sockets and closing the connection immediately, preventing network thread locks.
 
 ### 🔄 App Updates
@@ -37,12 +38,13 @@
 
 ### 🌐 Interactive WebView Web Engine
 - **Dedicated Browser Card**: A special card in the main UI for quick access to the in-app browser.
-- **TV Pointer Navigation**: Dedicated D-pad pointer control that automatically snaps to the nearest clickable element. Improved behavior (toolbar no longer forces visibility on load for better content interaction). Hold the pointer at the screen edge to pan pages that are wider or taller than the TV view.
+- **TV Pointer Navigation**: Dedicated D-pad pointer control. Hold the pointer at the screen edge to pan pages that are wider or taller than the TV view. Clicks map through the visible viewport so the far edge stays accurate under zoom. Center on Close, Back, and other toolbar items activates chrome; page clicks go to the WebView.
 - **Desktop Page Fit**: Desktop sites scale to the TV view instead of clipping at a fixed width. Remaining overflow can be panned with the D-pad.
-- **WebView Action Toolbar**: Toggleable toolbar (Back, Forward, Reload, Home, Close, Desktop Mode, Auto-Fullscreen) with navigation button snapping. Adblock toggle uses Speaker Notes / Speaker Notes Off icons.
+- **WebView Action Toolbar**: Toggleable toolbar (Back, Forward, Reload, Home, Close, Desktop Mode, Auto-Fullscreen) with navigation button snapping. Close returns to browse. Adblock toggle uses Speaker Notes / Speaker Notes Off icons.
+- **Verification Pages**: Bot-check pages keep the overlay pointer, skip injected page clicks, and stay in the WebView so challenge cookies can be stored. Main-frame load errors toast; leaving browse happens only if the first page never finished.
 - **TV-friendly Adblock**: Manage blocking on-device under **Settings → Adblock** — *My blocked sites* (add/remove domains), *List packs* (toggle trusted filter packs that auto-download), *Page popups & overlays* (CSS + JS cleaner for in-site spam modals), and browser long-press on the adblock button to block the current site. Bundled/remote list files are internal; users never edit list files on the device.
 - **Security Redirect Alert**: Prompts the user with a confirmation dialog before allowing external webpage redirects.
-- **Clean WebView Termination**: Automatically destroys web views, clears caches/cookies, and frees resources upon closing.
+- **Clean WebView Termination**: Destroys the WebView and frees overlays on close. Cookies stay so a later visit can reuse a completed check.
 - **Screensaver Prevention**: Keeps the display active during WebView video streams.
 
 ## Screenshots

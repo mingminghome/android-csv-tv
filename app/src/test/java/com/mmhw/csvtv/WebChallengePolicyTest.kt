@@ -95,11 +95,32 @@ class WebChallengePolicyTest {
     }
 
     @Test
+    fun challengeTitle_andSameUrlInterstitial() {
+        assertTrue(WebChallengePolicy.isChallengeTitle("Just a moment..."))
+        assertTrue(WebChallengePolicy.looksLikeChallenge("https://watch.example.com/live", "Attention Required! | Example"))
+        assertFalse(WebChallengePolicy.looksLikeChallenge("https://watch.example.com/live", "Live Channel"))
+        assertTrue(WebChallengePolicy.looksLikeChallenge("https://watch.example.com/cdn-cgi/challenge-platform/x", "Live"))
+    }
+
+    @Test
+    fun desktopLayoutUa_keepsWebViewEngineTokens() {
+        val def = "Mozilla/5.0 (Linux; Android 13; Pixel TV; wv) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Version/4.0 Chrome/120.0.0.0 Mobile Safari/537.36"
+        val ua = WebChallengePolicy.desktopLayoutUserAgent(def)
+        assertTrue(ua.contains("; wv"))
+        assertTrue(ua.contains("Version/4.0"))
+        assertFalse(ua.contains("Mobile"))
+        assertTrue(ua.contains("Chrome/120.0.0.0"))
+    }
+
+    @Test
     fun overlayGuardJs_usesSharedMarkers() {
         val js = WebChallengePolicy.overlayGuardJs()
         assertTrue(js.contains("function isChallengePage"))
         assertTrue(js.contains("function isHumanCheck"))
         assertTrue(js.contains("cdn-cgi\\/challenge"))
         assertEquals("\\/cdn-cgi\\/challenge", WebChallengePolicy.escapeForJsRegex("/cdn-cgi/challenge"))
+        val probe = WebChallengePolicy.challengePageProbeJs()
+        assertTrue(probe.contains("isChallengePage()"))
     }
 }

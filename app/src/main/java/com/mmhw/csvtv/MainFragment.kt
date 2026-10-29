@@ -38,6 +38,9 @@ class MainFragment : BrowseSupportFragment() {
     private val rowsAdapter = ArrayObjectAdapter(ListRowPresenter())
     private var videos: List<Video> = emptyList()
     private val handler = Handler(Looper.getMainLooper())
+    private val precheckHandler = Handler(Looper.getMainLooper())
+    private var catalogNetworkPaused = false
+    private var precheckQueue: MutableList<Video>? = null
 
     private var latestUpdateVersion: String? = null
     private var latestUpdateApkUrl: String? = null
@@ -56,6 +59,9 @@ class MainFragment : BrowseSupportFragment() {
     private var updateProgressPercent: TextView? = null
 
     private var isActive = true
+    private val cardOpenGate = CardOpenGate()
+    private var openingVideo: Video? = null
+    private var leftForPlayer = false
 
     private val downloadProgressRunnable = object : Runnable {
         override fun run() {
@@ -107,17 +113,14 @@ class MainFragment : BrowseSupportFragment() {
     private var isFirstRefreshOfCurrentFocused = true
     private val focusedVideoRefreshRunnable = object : Runnable {
         override fun run() {
-            val video = focusedVideo
-            if (video != null) {
-                refreshFocusedVideoMetadata(video)
-                val nextDelay = if (isFirstRefreshOfCurrentFocused) {
-                    isFirstRefreshOfCurrentFocused = false
-                    60_000L
-                } else {
-                    60_000L
-                }
-                focusedVideoRefreshHandler.postDelayed(this, nextDelay)
-            }
+            if (catalogNetworkPaused) return
+            val video = focusedVideo ?: return
+            refreshFocusedVideoMetadata(video)
+            isFirstRefreshOfCurrentFocused = false
+            focusedVideoRefreshHandler.postDelayed(
+                this,
+                CatalogNetworkPolicy.FOCUS_PROBE_REPEAT_MS
+            )
         }
     }
 
@@ -165,10 +168,15 @@ class MainFragment : BrowseSupportFragment() {
             focusedVideoRefreshHandler.removeCallbacks(focusedVideoRefreshRunnable)
             val video = item as? Video
             val urlLower = video?.url?.trim()?.lowercase() ?: ""
-            if (video != null && urlLower != "settings" && urlLower != "refresh" && urlLower != "browser") {
+            if (video != null && !CatalogNetworkPolicy.isUtilityUrl(video.url)) {
                 focusedVideo = video
                 isFirstRefreshOfCurrentFocused = true
-                focusedVideoRefreshHandler.postDelayed(focusedVideoRefreshRunnable, 10_000L)
+                if (!catalogNetworkPaused) {
+                    focusedVideoRefreshHandler.postDelayed(
+                        focusedVideoRefreshRunnable,
+                        CatalogNetworkPolicy.FOCUS_PROBE_INITIAL_MS
+                    )
+                }
             } else {
                 focusedVideo = null
             }
@@ -188,6 +196,7 @@ class MainFragment : BrowseSupportFragment() {
 
         when {
             url.equals("browser", ignoreCase = true) -> {
+                if (!beginCardOpen(video)) return
                 val browserUrl = Utils.getSearchEngineUrl(requireContext())
                 openWebViewFragment(browserUrl, isBrowserCard = true)
                 return
@@ -213,48 +222,105 @@ class MainFragment : BrowseSupportFragment() {
                 return
             }
             url.startsWith("rtmp://") -> {
+                if (!beginCardOpen(video)) return
                 Log.d("MainFragment", "Opening PlaybackFragment directly for RTMP URL: $url")
                 Utils.incrementWatchCount(requireContext(), url)
                 openPlaybackFragment(url)
                 return
             }
             else -> {
+                if (!beginCardOpen(video)) return
+                val generation = cardOpenGate.generation
                 Utils.resolveUrl(url, requireContext()) { resolvedUrl, contentType, format, resolution, error, isAudioOnly, audioChannels ->
-                    val finalUrlToOpen = if (!resolvedUrl.isNullOrBlank()) resolvedUrl else url
-                    // Prefer native player for real streams and IPTV gateways so stall recovery works.
-                    // WebView is a last resort for generic web pages (no auto-reconnect for live video).
-                    val preferNativePlayer =
-                        Utils.shouldOpenInNativePlayer(finalUrlToOpen, contentType, format)
+                    activity?.runOnUiThread {
+                        if (!isAdded || isDetached) return@runOnUiThread
+                        if (!cardOpenGate.isCurrent(url, generation)) return@runOnUiThread
 
-                    if (!resolvedUrl.isNullOrBlank() && error == null) {
-                        Utils.incrementWatchCount(requireContext(), url)
-                        Log.d(
-                            "MainFragment",
-                            "Resolved URL: $url -> $resolvedUrl, Content-Type: $contentType, " +
-                                "format=$format, isVideoStream=${Utils.isVideoStream(resolvedUrl, contentType)}, " +
-                                "preferNative=$preferNativePlayer"
-                        )
-                        if (preferNativePlayer) {
-                            Log.d("MainFragment", "Opening PlaybackFragment for resolved URL: $resolvedUrl, Content-Type: $contentType")
-                            openPlaybackFragment(resolvedUrl, contentType)
+                        val finalUrlToOpen = if (!resolvedUrl.isNullOrBlank()) resolvedUrl else url
+                        // Prefer native player for real streams and IPTV gateways so stall recovery works.
+                        // WebView is a last resort for generic web pages (no auto-reconnect for live video).
+                        val preferNativePlayer =
+                            Utils.shouldOpenInNativePlayer(finalUrlToOpen, contentType, format)
+
+                        if (!resolvedUrl.isNullOrBlank() && error == null) {
+                            Utils.incrementWatchCount(requireContext(), url)
+                            Log.d(
+                                "MainFragment",
+                                "Resolved URL: $url -> $resolvedUrl, Content-Type: $contentType, " +
+                                    "format=$format, isVideoStream=${Utils.isVideoStream(resolvedUrl, contentType)}, " +
+                                    "preferNative=$preferNativePlayer"
+                            )
+                            if (preferNativePlayer) {
+                                Log.d("MainFragment", "Opening PlaybackFragment for resolved URL: $resolvedUrl, Content-Type: $contentType")
+                                openPlaybackFragment(resolvedUrl, contentType)
+                            } else {
+                                Log.d("MainFragment", "Opening WebViewFragment for resolved URL: $resolvedUrl")
+                                openWebViewFragment(resolvedUrl, skipNativeHandoff = Utils.isHtmlContentType(contentType))
+                            }
                         } else {
-                            Log.d("MainFragment", "Opening WebViewFragment for resolved URL: $resolvedUrl")
-                            openWebViewFragment(resolvedUrl, skipNativeHandoff = Utils.isHtmlContentType(contentType))
-                        }
-                    } else {
-                        Log.w("MainFragment", "Failed to resolve URL: $url, error: $error, preferNative=$preferNativePlayer")
-                        Utils.incrementWatchCount(requireContext(), url)
-                        if (preferNativePlayer) {
-                            Log.d("MainFragment", "Opening PlaybackFragment for URL despite error: $finalUrlToOpen")
-                            openPlaybackFragment(finalUrlToOpen, contentType)
-                        } else {
-                            Log.d("MainFragment", "Opening WebViewFragment for URL: $finalUrlToOpen")
-                            openWebViewFragment(finalUrlToOpen, skipNativeHandoff = Utils.isHtmlContentType(contentType))
+                            Log.w("MainFragment", "Failed to resolve URL: $url, error: $error, preferNative=$preferNativePlayer")
+                            Utils.incrementWatchCount(requireContext(), url)
+                            if (preferNativePlayer) {
+                                Log.d("MainFragment", "Opening PlaybackFragment for URL despite error: $finalUrlToOpen")
+                                openPlaybackFragment(finalUrlToOpen, contentType)
+                            } else {
+                                Log.d("MainFragment", "Opening WebViewFragment for URL: $finalUrlToOpen")
+                                openWebViewFragment(finalUrlToOpen, skipNativeHandoff = Utils.isHtmlContentType(contentType))
+                            }
                         }
                     }
                 }
             }
         }
+    }
+
+    /** @return false if this card is already opening (ignore the extra click). */
+    private fun beginCardOpen(video: Video): Boolean {
+        when (val result = cardOpenGate.tryBegin(video.url)) {
+            is CardOpenGate.Begin.AlreadyOpening -> {
+                Log.d("MainFragment", "Ignoring duplicate open for ${video.url}")
+                return false
+            }
+            is CardOpenGate.Begin.Started -> {
+                result.previousUrl?.let { previous ->
+                    setCardOpening(previous, false)
+                }
+                openingVideo = video
+                setCardOpening(video.url, true)
+                return true
+            }
+        }
+    }
+
+    private fun setCardOpening(url: String, opening: Boolean) {
+        val trimmed = url.trim()
+        var found = false
+        for (item in videos) {
+            if (item.url.trim().equals(trimmed, ignoreCase = true)) {
+                item.isOpening = opening
+                updateVideoCard(item)
+                found = true
+            }
+        }
+        openingVideo?.let { current ->
+            if (current.url.trim().equals(trimmed, ignoreCase = true)) {
+                current.isOpening = opening
+                if (!found) updateVideoCard(current)
+            }
+        }
+    }
+
+    private fun clearCardOpen() {
+        val video = openingVideo
+        val url = cardOpenGate.openingUrl
+        cardOpenGate.clear()
+        openingVideo = null
+        leftForPlayer = false
+        if (video != null) {
+            video.isOpening = false
+            updateVideoCard(video)
+        }
+        if (url != null) setCardOpening(url, false)
     }
 
     private fun handleHeaderClick(header: HeaderItem, row: Any) {
@@ -275,6 +341,7 @@ class MainFragment : BrowseSupportFragment() {
             .replace(R.id.fragment_container, fragment)
             .addToBackStack(null)
             .commit()
+        leftForPlayer = true
     }
 
     private fun openWebViewFragment(
@@ -297,6 +364,44 @@ class MainFragment : BrowseSupportFragment() {
             .replace(R.id.fragment_container, fragment)
             .addToBackStack(null)
             .commit()
+        leftForPlayer = true
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (leftForPlayer) {
+            clearCardOpen()
+        }
+        resumeCatalogNetworkWork()
+    }
+
+    override fun onPause() {
+        pauseCatalogNetworkWork()
+        super.onPause()
+    }
+
+    private fun pauseCatalogNetworkWork() {
+        catalogNetworkPaused = true
+        precheckHandler.removeCallbacksAndMessages(null)
+        focusedVideoRefreshHandler.removeCallbacks(focusedVideoRefreshRunnable)
+    }
+
+    private fun resumeCatalogNetworkWork() {
+        catalogNetworkPaused = false
+        val queue = precheckQueue
+        if (queue != null && queue.isNotEmpty()) {
+            precheckHandler.postDelayed(
+                { checkNextVideo(queue) },
+                CatalogNetworkPolicy.PRECHECK_GAP_MS
+            )
+        }
+        if (focusedVideo != null) {
+            focusedVideoRefreshHandler.removeCallbacks(focusedVideoRefreshRunnable)
+            focusedVideoRefreshHandler.postDelayed(
+                focusedVideoRefreshRunnable,
+                CatalogNetworkPolicy.FOCUS_PROBE_INITIAL_MS
+            )
+        }
     }
 
     private fun updateDateTime() {
@@ -352,46 +457,54 @@ class MainFragment : BrowseSupportFragment() {
 
     private fun startVideoPrecheck() {
         if (!isActive || !isAdded || isDetached) return
-        
-        // Gather all unique videos (by url) to check, excluding refresh/settings
-        val uniqueVideos = videos.filter {
-            val urlLower = it.url.trim().lowercase()
-            urlLower != "settings" && urlLower != "refresh" && urlLower != "browser"
-        }.distinctBy { it.url }
 
-        // Sort by watch count descending
+        val uniqueVideos = videos.filter { !CatalogNetworkPolicy.shouldSkipPrecheck(it) }
+            .distinctBy { it.url }
+
         val checkQueue = uniqueVideos.sortedByDescending {
             Utils.getWatchCount(requireContext(), it.url)
         }.toMutableList()
-
+        precheckQueue = checkQueue
+        if (catalogNetworkPaused) return
         checkNextVideo(checkQueue)
     }
 
     private fun checkNextVideo(queue: MutableList<Video>) {
-        if (!isActive || queue.isEmpty() || !isAdded || isDetached) {
-            queue.clear()
+        if (catalogNetworkPaused) {
+            precheckQueue = queue
+            return
+        }
+        if (!isActive || !isResumed || queue.isEmpty() || !isAdded || isDetached) {
+            if (queue.isEmpty()) precheckQueue = null
             return
         }
 
         val video = queue.removeAt(0)
+        if (CatalogNetworkPolicy.shouldSkipPrecheck(video)) {
+            precheckHandler.post { checkNextVideo(queue) }
+            return
+        }
         video.isChecking = true
-        updateVideoCard(video)
 
         val startTime = System.currentTimeMillis()
         val context = context ?: return
 
-        Utils.resolveUrl(video.url, context) { resolvedUrl, contentType, format, resolution, error, isAudioOnly, audioChannels ->
+        Utils.resolveUrl(
+            video.url,
+            context,
+            bypassCache = false,
+            sniffBody = false
+        ) { resolvedUrl, contentType, format, resolution, error, isAudioOnly, audioChannels ->
             val ping = System.currentTimeMillis() - startTime
-            
+
             activity?.runOnUiThread {
                 if (!isActive || !isAdded || isDetached) {
-                    queue.clear()
                     return@runOnUiThread
                 }
-                
+
                 video.isChecking = false
                 video.pingMs = ping
-                
+
                 if (resolvedUrl != null && error == null) {
                     video.isValid = true
                     video.videoFormat = format
@@ -401,13 +514,12 @@ class MainFragment : BrowseSupportFragment() {
                 } else {
                     video.isValid = false
                 }
-                
+
                 updateVideoCard(video)
-                
-                // Proceed to next video after a 500ms delay to keep network light
-                handler.postDelayed({
-                    if (isActive) checkNextVideo(queue)
-                }, 500)
+
+                precheckHandler.postDelayed({
+                    if (isActive && !catalogNetworkPaused) checkNextVideo(queue)
+                }, CatalogNetworkPolicy.PRECHECK_GAP_MS)
             }
         }
     }
@@ -433,10 +545,16 @@ class MainFragment : BrowseSupportFragment() {
         val startTime = System.currentTimeMillis()
         val context = context ?: return
 
-        Utils.resolveUrl(video.url, context, bypassCache = true) { resolvedUrl, contentType, format, resolution, error, isAudioOnly, audioChannels ->
+        if (catalogNetworkPaused) return
+        Utils.resolveUrl(
+            video.url,
+            context,
+            bypassCache = false,
+            sniffBody = false
+        ) { resolvedUrl, contentType, format, resolution, error, isAudioOnly, audioChannels ->
             val ping = System.currentTimeMillis() - startTime
             activity?.runOnUiThread {
-                if (!isAdded || isDetached) return@runOnUiThread
+                if (catalogNetworkPaused || !isAdded || isDetached) return@runOnUiThread
                 video.pingMs = ping
                 if (resolvedUrl != null && error == null) {
                     video.isValid = true
@@ -498,7 +616,11 @@ class MainFragment : BrowseSupportFragment() {
     override fun onDestroy() {
         super.onDestroy()
         isActive = false
+        catalogNetworkPaused = true
+        precheckQueue = null
+        clearCardOpen()
         handler.removeCallbacksAndMessages(null)
+        precheckHandler.removeCallbacksAndMessages(null)
         focusedVideoRefreshHandler.removeCallbacksAndMessages(null)
         dismissUpdateDialog()
         try {

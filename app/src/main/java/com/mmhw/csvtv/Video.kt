@@ -7,6 +7,7 @@ data class Video(
     val groupName: String = "Default",
     val isFav: Boolean = false,
     var isChecking: Boolean = false,
+    var isOpening: Boolean = false,
     var isValid: Boolean? = null,
     var pingMs: Long? = null,
     var resolution: String? = null,

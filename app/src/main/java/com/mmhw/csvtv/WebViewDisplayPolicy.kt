@@ -73,13 +73,74 @@ object WebViewDisplayPolicy {
     """.trimIndent()
 
     /**
+     * Map a point in WebView view pixels onto CSS client coordinates.
+     *
+     * `viewPx / displayMetrics.density` is only right when page scale is 1.
+     * Desktop overview-mode zoom makes that error 0 at the origin and largest
+     * at the opposite edge, which is where `elementFromPoint` then misses.
+     * The last CSS pixel is exclusive for hit-testing, so the far edge clamps
+     * to `cssSize - 1`.
+     */
+    fun viewToClient(
+        viewCoord: Float,
+        viewSize: Int,
+        cssSize: Float,
+        offset: Float = 0f
+    ): Float {
+        if (viewSize <= 0 || cssSize <= 0f) return 0f
+        val mapped = viewCoord / viewSize.toFloat() * cssSize + offset
+        val max = (cssSize - 1f).coerceAtLeast(0f)
+        return mapped.coerceIn(0f, max)
+    }
+
+    fun viewToClientJs(viewX: Float, viewY: Float, viewWidth: Int, viewHeight: Int): String = """
+        var vw = $viewWidth;
+        var vh = $viewHeight;
+        var vx = $viewX;
+        var vy = $viewY;
+        var cssW = window.innerWidth || 0;
+        var cssH = window.innerHeight || 0;
+        if (window.visualViewport) {
+            if (window.visualViewport.width) cssW = window.visualViewport.width;
+            if (window.visualViewport.height) cssH = window.visualViewport.height;
+        }
+        var ptX = (vw > 0 && cssW > 0) ? (vx / vw) * cssW : 0;
+        var ptY = (vh > 0 && cssH > 0) ? (vy / vh) * cssH : 0;
+        if (window.visualViewport) {
+            ptX += window.visualViewport.offsetLeft || 0;
+            ptY += window.visualViewport.offsetTop || 0;
+        }
+        if (cssW > 1) ptX = Math.min(Math.max(ptX, 0), cssW - 1);
+        else ptX = 0;
+        if (cssH > 1) ptY = Math.min(Math.max(ptY, 0), cssH - 1);
+        else ptY = 0;
+    """.trimIndent()
+
+    fun clickAtViewPointJs(viewX: Float, viewY: Float, viewWidth: Int, viewHeight: Int): String = """
+        (function() {
+            ${viewToClientJs(viewX, viewY, viewWidth, viewHeight)}
+            var el = document.elementFromPoint(ptX, ptY);
+            if (el) {
+                el.click();
+                el.focus();
+            }
+        })();
+    """.trimIndent()
+
+    /**
      * Scroll the element under the pointer, then the document, then the
      * largest remaining scroller. Returns true if anything moved.
      */
-    fun pageScrollJs(cssX: Int, cssY: Int, dx: Int, dy: Int): String = """
+    fun pageScrollJs(
+        viewX: Float,
+        viewY: Float,
+        viewWidth: Int,
+        viewHeight: Int,
+        dx: Int,
+        dy: Int
+    ): String = """
         (function() {
-            var ptX = $cssX;
-            var ptY = $cssY;
+            ${viewToClientJs(viewX, viewY, viewWidth, viewHeight)}
             var dx = $dx;
             var dy = $dy;
             function canScroll(el, x, y) {

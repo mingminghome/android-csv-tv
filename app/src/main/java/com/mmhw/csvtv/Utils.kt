@@ -26,8 +26,13 @@ object Utils {
     private val client = OkHttpClient.Builder()
         .followRedirects(true)
         .followSslRedirects(true)
-        .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
-        .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+        .connectTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(12, java.util.concurrent.TimeUnit.SECONDS)
+        .callTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
+        .dispatcher(okhttp3.Dispatcher().apply {
+            maxRequests = 4
+            maxRequestsPerHost = 2
+        })
         .sslSocketFactory(createUnsafeSslContext().socketFactory, createUnsafeTrustManager())
         .hostnameVerifier { _, _ -> true }
         .build()
@@ -400,6 +405,7 @@ object Utils {
         url: String,
         context: Context? = null,
         bypassCache: Boolean = false,
+        sniffBody: Boolean = true,
         callback: (String?, String?, String?, String?, String?, Boolean?, String?) -> Unit
     ) {
         val trimmedUrl = url.trim()
@@ -478,7 +484,17 @@ object Utils {
                 if (response.isSuccessful && contentType != null && isVideoStream(resolvedUrl, contentType)) {
                     val meta = ResolvedMetadata(resolvedUrl, contentType, format, null, null, isAudio, null)
                     urlCache[url] = meta
-                    if (context != null && isShortUrl(url)) {
+                    if (context != null) {
+                        savePersistentResolvedMetadata(context, url, meta)
+                    }
+                    callback(resolvedUrl, contentType, format, null, null, isAudio, null)
+                    return
+                }
+
+                if (!sniffBody) {
+                    val meta = ResolvedMetadata(resolvedUrl, contentType, format, null, null, isAudio, null)
+                    urlCache[url] = meta
+                    if (context != null && response.isSuccessful) {
                         savePersistentResolvedMetadata(context, url, meta)
                     }
                     callback(resolvedUrl, contentType, format, null, null, isAudio, null)
@@ -488,6 +504,7 @@ object Utils {
                 // Otherwise, try GET request to sniff content type or body for HLS playlist resolution
                 val getRequest = Request.Builder()
                     .url(resolvedUrl)
+                    .header("Range", "bytes=0-8191")
                     .get()
                     .build()
 
@@ -566,7 +583,7 @@ object Utils {
 
                         val meta = ResolvedMetadata(finalResolvedUrl, determinedContentType, determinedFormat, parsedResolution, finalError, isAudio, null)
                         urlCache[url] = meta
-                        if (context != null && isShortUrl(url) && finalError == null) {
+                        if (context != null && finalError == null) {
                             savePersistentResolvedMetadata(context, url, meta)
                         }
                         callback(finalResolvedUrl, determinedContentType, determinedFormat, parsedResolution, finalError, isAudio, null)

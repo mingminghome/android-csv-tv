@@ -67,6 +67,38 @@ object WebChallengePolicy {
         return containsAny(lower, CHALLENGE_URL_MARKERS)
     }
 
+    fun isChallengeTitle(title: String?): Boolean {
+        if (title.isNullOrBlank()) return false
+        return containsAny(title.lowercase(), CHALLENGE_TITLE_MARKERS)
+    }
+
+    fun looksLikeChallenge(url: String?, title: String? = null): Boolean {
+        return isChallengeUrl(url) || isChallengeTitle(title)
+    }
+
+    /**
+     * Desktop layout UA that still matches this Chromium WebView.
+     * Stripping engine tokens (`wv`, `Version/4.0`) while the JS environment
+     * is still WebView is a mismatch and tends to force another human check.
+     */
+    fun desktopLayoutUserAgent(defaultUa: String): String {
+        val def = defaultUa.trim()
+        if (def.isBlank()) {
+            return "Mozilla/5.0 (Linux; Android 10; wv) AppleWebKit/537.36 " +
+                "(KHTML, like Gecko) Version/4.0 Chrome/122.0.0.0 Safari/537.36"
+        }
+        return def
+            .replace(" Mobile", "")
+            .replace("Mobile ", "")
+    }
+
+    fun challengePageProbeJs(): String = """
+        (function() {
+            ${overlayGuardJs()}
+            try { return isChallengePage(); } catch (e) { return false; }
+        })();
+    """.trimIndent()
+
     /**
      * When true, [android.webkit.WebViewClient.shouldOverrideUrlLoading] must
      * return false so Chromium keeps the load (and any Set-Cookie on it).

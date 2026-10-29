@@ -17,6 +17,7 @@ import androidx.fragment.app.Fragment
 import androidx.leanback.widget.Presenter
 import com.bumptech.glide.Glide
 import com.bumptech.glide.load.DataSource
+import com.bumptech.glide.load.engine.DiskCacheStrategy
 import com.bumptech.glide.load.engine.GlideException
 import com.bumptech.glide.load.resource.bitmap.FitCenter
 import com.bumptech.glide.request.RequestListener
@@ -113,6 +114,7 @@ class CardPresenter(private val fragment: Fragment) : Presenter() {
             val icon = getLargerIcon(context, iconDrawable, 1.5f) ?: ContextCompat.getDrawable(context, iconDrawable)
             thumbnailImage.scaleType = ImageView.ScaleType.CENTER_INSIDE
             thumbnailImage.setImageDrawable(icon)
+            bindOpeningState(view, video.isOpening)
             return
         }
 
@@ -212,8 +214,13 @@ class CardPresenter(private val fragment: Fragment) : Presenter() {
         if (!video.thumbnailUrl.isNullOrBlank()) {
             // Start with CENTER_INSIDE so the placeholder icon displays at proper (not oversized/cropped) size
             thumbnailImage.scaleType = ImageView.ScaleType.CENTER_INSIDE
+            val density = context.resources.displayMetrics.density
+            val thumbW = (224 * density).toInt().coerceAtLeast(1)
+            val thumbH = (126 * density).toInt().coerceAtLeast(1)
             Glide.with(fragment)
                 .load(video.thumbnailUrl)
+                .override(thumbW, thumbH)
+                .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
                 .transform(FitCenter())
                 .placeholder(placeholderIcon)
                 .error(noThumbIcon)
@@ -245,6 +252,7 @@ class CardPresenter(private val fragment: Fragment) : Presenter() {
             thumbnailImage.scaleType = ImageView.ScaleType.CENTER_INSIDE
             thumbnailImage.setImageDrawable(noThumbIcon)
         }
+        bindOpeningState(view, video.isOpening)
         android.util.Log.d("CardPresenter", "onBindViewHolder: title=${video.title}, isValid=${video.isValid}, tag=${infoLayout.getTag(R.id.info_layout)}")
     }
 
@@ -259,6 +267,13 @@ class CardPresenter(private val fragment: Fragment) : Presenter() {
         if (scrollView != null) {
             stopTickerAnimation(scrollView)
         }
+        bindOpeningState(view, false)
+    }
+
+    private fun bindOpeningState(view: View, opening: Boolean) {
+        val vis = if (opening) View.VISIBLE else View.GONE
+        view.findViewById<View>(R.id.card_opening_dim)?.visibility = vis
+        view.findViewById<View>(R.id.card_opening_progress)?.visibility = vis
     }
 
     private fun startTickerAnimation(scrollView: HorizontalScrollView, contentView: View) {

@@ -16,11 +16,12 @@ import android.app.AlertDialog
 import android.text.InputType
 import android.view.inputmethod.EditorInfo
 import android.webkit.CookieManager
-import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.webkit.WebSettingsCompat
+import androidx.webkit.WebViewFeature
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -60,11 +61,8 @@ class WebViewFragment : Fragment() {
     private var isAdblockEnabled = true
     private var initialLoadCompleted = false
     private val pointerHideHandler = Handler(Looper.getMainLooper())
-    private val pointerHideDelay = 3000L
     private var pointerX = 0f
     private var pointerY = 0f
-    private val pointerSpeed = 20f
-    private val scrollThreshold = 30f
 
     // Track if we recently showed keyboard for a web input via pointer click.
     // Used to avoid immediately stealing focus back to container (which would hide IME).
@@ -78,11 +76,10 @@ class WebViewFragment : Fragment() {
     private var originalOrientation: Int = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
     private var isInFullscreen = false
     private var isCursorShowing = false
-    private var lastDimensionUpdate = 0L
-    private val dimensionUpdateDebounce = 1000L
     private val jsHandler = Handler(Looper.getMainLooper())
+    private var isOnChallengePage = false
+    private var lastChallengeProbeAt = 0L
 
-    private val doubleClickSpeed = 400L
     private val clickHandler = Handler(Looper.getMainLooper())
     private var clickRunnable: Runnable? = null
     private var clickCount = 0
@@ -184,6 +181,9 @@ class WebViewFragment : Fragment() {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
+            isClickable = false
+            isFocusable = false
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         }
         activityContent?.addView(pointerContainer)
 
@@ -368,9 +368,9 @@ class WebViewFragment : Fragment() {
      */
     private fun injectOverlayCleaner() {
         if (!isAdblockEnabled || isWebViewDestroyed || !::webView.isInitialized) return
+        if (isOnChallengePage || WebChallengePolicy.isChallengeUrl(webView.url)) return
         val ctx = context ?: return
         if (!AdBlocker.isOverlayBlockingEnabled(ctx)) return
-        if (WebChallengePolicy.isChallengeUrl(webView.url)) return
         try {
             webView.evaluateJavascript(AdBlocker.buildOverlayCleanerScript(), null)
         } catch (e: Exception) {
@@ -514,7 +514,12 @@ class WebViewFragment : Fragment() {
             id = View.generateViewId()
             setImageResource(R.drawable.cursor)
             visibility = View.VISIBLE
-            layoutParams = FrameLayout.LayoutParams(36, 36)
+            isClickable = false
+            isFocusable = false
+            layoutParams = FrameLayout.LayoutParams(
+                WebViewInputPolicy.POINTER_SIZE_PX,
+                WebViewInputPolicy.POINTER_SIZE_PX
+            )
             // Use SOFTWARE layer for the cursor overlay. This prevents Chromium/WebView from
             // failing to create EGL fence sync objects (EGL_BAD_ATTRIBUTE) when hardware
             // layers are mixed with overlays on emulators.
@@ -523,17 +528,9 @@ class WebViewFragment : Fragment() {
         parent.addView(pointer)
 
         // Set initial position immediately (post will refine after layout)
-        pointerX = (parent.width / 2).toFloat()
-        pointerY = (parent.height / 2).toFloat()
-        updatePointerPosition()
-
-        parent.post {
-            if (parent.width > 0 && parent.height > 0) {
-                pointerX = (parent.width / 2).toFloat()
-                pointerY = (parent.height / 2).toFloat()
-                updatePointerPosition()
-            }
-        }
+        centerPointerOnHost()
+        parent.post { centerPointerOnHost() }
+        webView.post { centerPointerOnHost() }
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -553,33 +550,39 @@ class WebViewFragment : Fragment() {
             setSupportZoom(true)
             mediaPlaybackRequiresUserGesture = false
             domStorageEnabled = true
-            allowFileAccess = true
+            // https catalog / browser URLs only; file and content schemes stay closed to page JS.
+            allowFileAccess = false
+            allowContentAccess = false
             setSupportMultipleWindows(true)
             javaScriptCanOpenWindowsAutomatically = true
-            allowContentAccess = true
             // Disable offscreen pre-raster to reduce EGL fence sync issues on some devices/emulators
             offscreenPreRaster = false
             // Desktop by default so mobile players (auto-fullscreen + tiny episode lists)
             // are not served on TV. Keep the real WebView Chrome/Android tokens so
             // bot-check scripts see a UA that matches this engine.
             userAgentString = if (isDesktopMode) desktopUserAgent(webView.context) else null
+            cacheMode = WebSettings.LOAD_DEFAULT
+            mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
         }
         webView.setInitialScale(0)
         webView.isHorizontalScrollBarEnabled = true
         webView.isVerticalScrollBarEnabled = true
+        suppressAppIdentityHeader(webView.settings)
 
         val cookieManager = CookieManager.getInstance()
         cookieManager.setAcceptCookie(true)
         cookieManager.setAcceptThirdPartyCookies(webView, true)
 
-        webView.addJavascriptInterface(AndroidBridge(this), "AndroidBridge")
         webView.keepScreenOn = true
 
         webView.webViewClient = object : WebViewClient() {
             override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
                 super.onPageStarted(view, url, favicon)
                 isLoading = true
-                injectDesktopViewportIfNeeded()
+                isOnChallengePage = WebChallengePolicy.isChallengeUrl(url)
+                if (!isOnChallengePage) {
+                    injectDesktopViewportIfNeeded()
+                }
                 // Navigating to a different page: allow handoff of streams again.
                 if (!url.isNullOrBlank() &&
                     !url.startsWith("about:") &&
@@ -587,34 +590,13 @@ class WebViewFragment : Fragment() {
                 ) {
                     lastWebPageUrl = url
                     // Do not unlock auto-fullscreen or native handoff here.
-                    // Query-only player hops and CF redirects are not a user address entry.
+                    // Query-only player hops and verification redirects are not a user address entry.
                 }
                 activity?.runOnUiThread {
                     if (isAdded) {
                         btnWebRefresh.setImageResource(R.drawable.ic_close)
-                        if (isBrowserCard) {
-                            // Early block clipboard to avoid "not in focus" denials during load
-                            webView.evaluateJavascript("""
-                                (function() {
-                                    try {
-                                        if (navigator.clipboard) {
-                                            const blocked = () => Promise.reject(new Error('Clipboard disabled in this browser'));
-                                            navigator.clipboard.readText = blocked;
-                                            navigator.clipboard.writeText = blocked;
-                                            navigator.clipboard.read = blocked;
-                                            navigator.clipboard.write = blocked;
-                                        }
-                                        const origExec = document.execCommand;
-                                        document.execCommand = function(cmd, ...args) {
-                                            if (['copy', 'cut', 'paste'].includes(cmd)) {
-                                                console.log('Blocked clipboard via execCommand: ' + cmd);
-                                                return false;
-                                            }
-                                            return origExec.apply(this, arguments);
-                                        };
-                                    } catch(e) {}
-                                })();
-                            """, null);
+                        if (!isOnChallengePage) {
+                            injectBrowserClipboardGuard()
                         }
                     }
                 }
@@ -635,48 +617,20 @@ class WebViewFragment : Fragment() {
                             urlEditText?.setText(url ?: "")
                         }
                         updateNavigationButtons()
-
-                        if (isBrowserCard) {
-                            // Block clipboard access from the page to avoid "not in focus" denials
-                            // and repeated system errors on TV. Pages like search engines often try it.
-                            webView.evaluateJavascript("""
-                                (function() {
-                                    try {
-                                        if (navigator.clipboard) {
-                                            const blocked = () => Promise.reject(new Error('Clipboard disabled in this browser'));
-                                            navigator.clipboard.readText = blocked;
-                                            navigator.clipboard.writeText = blocked;
-                                            navigator.clipboard.read = blocked;
-                                            navigator.clipboard.write = blocked;
-                                        }
-                                        const origExec = document.execCommand;
-                                        document.execCommand = function(cmd, ...args) {
-                                            if (['copy', 'cut', 'paste'].includes(cmd)) {
-                                                console.log('Blocked clipboard via execCommand: ' + cmd);
-                                                return false;
-                                            }
-                                            return origExec.apply(this, arguments);
-                                        };
-                                    } catch(e) {}
-                                })();
-                            """, null);
-                        }
-
-                        // Hide in-page spam popups / JS overlays (cosmetic + heuristic)
-                        injectOverlayCleaner()
-                        injectDesktopViewportIfNeeded()
-                        // SPA / reload can replace the document; keep the Back-exit lock.
-                        if (fullscreenGate.suppressUntilUserAction) {
-                            blockSiteFullscreenApi()
-                        }
-
-                        // Reset pointer after new page load so pointer works on new URL
-                        if (!isInFullscreen) {
-                            setCursorVisibility(true);
-                            if (::pointerContainer.isInitialized && pointerContainer.width > 0 && pointerContainer.height > 0) {
-                                pointerX = pointerContainer.width / 2f;
-                                pointerY = pointerContainer.height / 2f;
-                                updatePointerPosition();
+                        refreshChallengeState(url) { challenge ->
+                            if (!isAdded || isWebViewDestroyed) return@refreshChallengeState
+                            if (!challenge) {
+                                injectBrowserClipboardGuard()
+                                injectOverlayCleaner()
+                                injectDesktopViewportIfNeeded()
+                            }
+                            // SPA / reload can replace the document; keep the Back-exit lock.
+                            if (fullscreenGate.suppressUntilUserAction) {
+                                blockSiteFullscreenApi()
+                            }
+                            if (!isInFullscreen) {
+                                setCursorVisibility(true)
+                                centerPointerOnHost()
                             }
                         }
                     }
@@ -754,10 +708,26 @@ class WebViewFragment : Fragment() {
                 return null
             }
 
+            override fun onReceivedError(
+                view: WebView?,
+                request: android.webkit.WebResourceRequest?,
+                error: android.webkit.WebResourceError?
+            ) {
+                val description = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                    error?.description?.toString()
+                } else {
+                    null
+                }
+                handleMainFrameLoadError(
+                    isMainFrame = request?.isForMainFrame == true,
+                    description = description
+                )
+            }
+
             @Suppress("DEPRECATION")
             override fun onReceivedError(view: WebView?, errorCode: Int, description: String?, failingUrl: String?) {
-                showToast("Failed to load page: $description")
-                exitToMain()
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) return
+                handleMainFrameLoadError(isMainFrame = true, description = description)
             }
 
             @SuppressLint("WebViewClientOnReceivedSslError")
@@ -776,7 +746,10 @@ class WebViewFragment : Fragment() {
                     webProgress.visibility = View.VISIBLE
                     webProgress.progress = newProgress
                 }
-                if (newProgress >= 40) {
+                if (newProgress in 30..99) {
+                    refreshChallengeState(view?.url)
+                }
+                if (newProgress >= 40 && !isOnChallengePage) {
                     injectDesktopViewportIfNeeded()
                 }
             }
@@ -867,10 +840,9 @@ class WebViewFragment : Fragment() {
                 isUserGesture: Boolean,
                 resultMsg: android.os.Message?
             ): Boolean {
-                // Always block new windows / popups (including ad-related ones).
-                // This prevents unwanted ad popups and force-opens in the main view if needed.
-                // (We already had a prompt-based version; now stricter block for cleaner experience.)
-                return true
+                // Returning false tells Chromium the window was not created.
+                // Returning true without sending resultMsg leaves the request hanging.
+                return false
             }
         }
 
@@ -882,19 +854,53 @@ class WebViewFragment : Fragment() {
         }
     }
 
-    class AndroidBridge(private val fragment: WebViewFragment) {
-        @JavascriptInterface
-        @Suppress("unused")
-        fun updateDimensions() {
-            fragment.activity?.runOnUiThread {
-                if (fragment.isAdded) {
-                    val now = System.currentTimeMillis()
-                    if (now - fragment.lastDimensionUpdate > fragment.dimensionUpdateDebounce) {
-                        fragment.lastDimensionUpdate = now
-                        fragment.updateContentDimensions()
-                    }
-                }
+    private fun toolbarHeightPx(): Float {
+        return WebViewInputPolicy.TOOLBAR_HEIGHT_DP * resources.displayMetrics.density
+    }
+
+    private fun isPointerOverToolbar(): Boolean {
+        return WebViewInputPolicy.isPointerOverToolbar(
+            pointerY,
+            toolbarHeightPx(),
+            isToolbarShowing,
+            isInFullscreen
+        )
+    }
+
+    /**
+     * Pointer and HTML5 fullscreen hosts sit on the activity content root, so they
+     * stay on screen when this fragment is hidden under the native player.
+     */
+    private fun setActivityOverlaysVisible(visible: Boolean) {
+        if (!visible) {
+            setCursorVisibility(false)
+            if (isInFullscreen) {
+                exitFullscreenIfNeeded(userInitiated = false)
             }
+            if (::fullscreenContainer.isInitialized) {
+                fullscreenContainer.visibility = View.GONE
+            }
+        }
+        if (::pointerContainer.isInitialized) {
+            pointerContainer.visibility = if (visible) View.VISIBLE else View.GONE
+        }
+        if (visible) {
+            if (isInFullscreen && ::fullscreenContainer.isInitialized) {
+                fullscreenContainer.visibility = View.VISIBLE
+            }
+            if (!isInFullscreen) {
+                setCursorVisibility(true)
+            }
+        }
+    }
+
+    private fun handleMainFrameLoadError(isMainFrame: Boolean, description: String?) {
+        if (isWebViewDestroyed || !isAdded) return
+        if (WebViewLoadErrorPolicy.shouldAnnounce(isMainFrame)) {
+            showToast("Failed to load page: $description")
+        }
+        if (WebViewLoadErrorPolicy.shouldExitToBrowse(isMainFrame, initialLoadCompleted)) {
+            exitToMain()
         }
     }
 
@@ -903,7 +909,7 @@ class WebViewFragment : Fragment() {
         isToolbarShowing = show
 
         webToolbar.animate().cancel()
-        val toolbarHeight = (56f * resources.displayMetrics.density)
+        val toolbarHeight = toolbarHeightPx()
         if (show) {
             webToolbar.visibility = View.VISIBLE
             webToolbar.animate()
@@ -1062,7 +1068,7 @@ class WebViewFragment : Fragment() {
 
     // Suggested missing Browser functions (some implemented, others for future):
     // - Ad blocking: AdBlocker (assets/adblock + remote lists; Settings → Adblock Lists)
-    // - Strict popup/new window blocking: implemented (onCreateWindow always blocks)
+    // - Strict popup/new window blocking: onCreateWindow returns false (no hanging resultMsg)
     // - goHome(): implemented (toolbar Home). Root BACK exits to main (aligned with Close).
     // - Bookmarks: TODO (store in prefs like "browser_bookmarks", add "Add to Bookmarks", dialog to load)
     // - Visited history: TODO (collect in onPageFinished, dialog like CSV recent sources)
@@ -1145,6 +1151,7 @@ class WebViewFragment : Fragment() {
         suppressHandoffUrl = streamUrl
         stopHtmlVideoStallMonitor()
         pauseHtmlMedia()
+        setActivityOverlaysVisible(false)
         if (::webView.isInitialized && !isWebViewDestroyed) {
             try {
                 webView.onPause()
@@ -1165,6 +1172,7 @@ class WebViewFragment : Fragment() {
             if (fm.isStateSaved) {
                 android.util.Log.w("WebViewFragment", "Hand-off skipped: state already saved")
                 handedOffToNativePlayer = false
+                setActivityOverlaysVisible(true)
                 return
             }
             // Keep this fragment's view + history under the player (hide, don't replace).
@@ -1176,6 +1184,7 @@ class WebViewFragment : Fragment() {
         } catch (e: Exception) {
             android.util.Log.e("WebViewFragment", "Hand-off failed", e)
             handedOffToNativePlayer = false
+            setActivityOverlaysVisible(true)
         }
     }
 
@@ -1320,9 +1329,8 @@ class WebViewFragment : Fragment() {
     private fun recoverHtmlVideo() {
         if (htmlVideoRecoverCount >= maxHtmlVideoRecovers) {
             android.util.Log.w("WebViewFragment", "HTML video recover budget exhausted")
-            showToast("Stream stalled. Leaving player…")
+            showToast("Stream stalled. Use Back or Close to leave.")
             stopHtmlVideoStallMonitor()
-            exitToMain()
             return
         }
         htmlVideoRecoverCount++
@@ -1393,8 +1401,74 @@ class WebViewFragment : Fragment() {
 
     private fun injectDesktopViewportIfNeeded() {
         if (!isDesktopMode || isWebViewDestroyed || !::webView.isInitialized) return
+        if (isOnChallengePage || WebChallengePolicy.isChallengeUrl(webView.url)) return
         try {
             webView.evaluateJavascript(WebViewDisplayPolicy.desktopViewportJs(), null)
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun injectBrowserClipboardGuard() {
+        if (!isBrowserCard || isOnChallengePage || isWebViewDestroyed || !::webView.isInitialized) return
+        try {
+            webView.evaluateJavascript(
+                """
+                (function() {
+                    try {
+                        if (navigator.clipboard) {
+                            const blocked = () => Promise.reject(new Error('Clipboard disabled in this browser'));
+                            navigator.clipboard.readText = blocked;
+                            navigator.clipboard.writeText = blocked;
+                            navigator.clipboard.read = blocked;
+                            navigator.clipboard.write = blocked;
+                        }
+                        const origExec = document.execCommand;
+                        document.execCommand = function(cmd, ...args) {
+                            if (['copy', 'cut', 'paste'].includes(cmd)) {
+                                return false;
+                            }
+                            return origExec.apply(this, arguments);
+                        };
+                    } catch(e) {}
+                })();
+                """.trimIndent(),
+                null
+            )
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun refreshChallengeState(url: String?, then: ((Boolean) -> Unit)? = null) {
+        if (isWebViewDestroyed || !::webView.isInitialized) {
+            then?.invoke(false)
+            return
+        }
+        if (WebChallengePolicy.isChallengeUrl(url ?: webView.url)) {
+            isOnChallengePage = true
+            then?.invoke(true)
+            return
+        }
+        val now = System.currentTimeMillis()
+        if (then == null && now - lastChallengeProbeAt < 400L) {
+            return
+        }
+        lastChallengeProbeAt = now
+        try {
+            webView.evaluateJavascript(WebChallengePolicy.challengePageProbeJs()) { raw ->
+                val on = raw?.contains("true") == true
+                isOnChallengePage = on
+                then?.invoke(on)
+            }
+        } catch (_: Exception) {
+            then?.invoke(isOnChallengePage)
+        }
+    }
+
+    private fun suppressAppIdentityHeader(settings: WebSettings) {
+        try {
+            if (WebViewFeature.isFeatureSupported("REQUESTED_WITH_HEADER_ALLOW_LIST")) {
+                WebSettingsCompat.setRequestedWithHeaderOriginAllowList(settings, emptySet())
+            }
         } catch (_: Exception) {
         }
     }
@@ -1443,15 +1517,14 @@ class WebViewFragment : Fragment() {
                 val directionals = listOf(KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT)
                 if (keyCode in directionals) {
                     resetPointerHideTimer()
-                    val speed = pointerSpeed
-                    val (deltaX, deltaY) = when (keyCode) {
-                        KeyEvent.KEYCODE_DPAD_UP -> 0f to -speed
-                        KeyEvent.KEYCODE_DPAD_DOWN -> 0f to speed
-                        KeyEvent.KEYCODE_DPAD_LEFT -> -speed to 0f
-                        KeyEvent.KEYCODE_DPAD_RIGHT -> speed to 0f
-                        else -> 0f to 0f
+                    val dir = dpadDir(keyCode)
+                    if (dir != null) {
+                        val (deltaX, deltaY) = WebViewInputPolicy.dpadDelta(
+                            dir,
+                            WebViewInputPolicy.POINTER_SPEED_PX
+                        )
+                        movePointer(deltaX, deltaY)
                     }
-                    movePointer(deltaX, deltaY)
                     return true
                 }
                 when (keyCode) {
@@ -1470,9 +1543,7 @@ class WebViewFragment : Fragment() {
                 when (keyCode) {
                     KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN -> {
                         setCursorVisibility(true)
-                        pointerX = (fullscreenContainer.width / 2).toFloat()
-                        pointerY = (fullscreenContainer.height / 2).toFloat()
-                        updatePointerPosition()
+                        centerPointerOnHost()
                         return true
                     }
                     KeyEvent.KEYCODE_DPAD_LEFT -> {
@@ -1510,15 +1581,15 @@ class WebViewFragment : Fragment() {
             KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> {
                 cancelPendingClick()
                 val density = resources.displayMetrics.density
-                val toolbarHeight = 56f * density
-                val isPointerInToolbar = isToolbarShowing && pointerY < toolbarHeight
+                val isPointerInToolbar = isPointerOverToolbar()
 
                 if (isPointerInToolbar) {
                     if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
                         navigateToolbarButtons(keyCode == KeyEvent.KEYCODE_DPAD_RIGHT)
                         return true
                     } else if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
-                        pointerY = 66f * density
+                        pointerY = WebViewInputPolicy.TOOLBAR_LEAVE_Y_DP * density
+                        clampPointerToHost()
                         updatePointerPosition()
                         updateToolbarButtonsFocus()
                         setCursorVisibility(true)
@@ -1527,12 +1598,11 @@ class WebViewFragment : Fragment() {
                 }
 
                 val speed = calculatePointerSpeed(keyCode)
-                val (deltaX, deltaY) = when (keyCode) {
-                    KeyEvent.KEYCODE_DPAD_UP -> 0f to -speed
-                    KeyEvent.KEYCODE_DPAD_DOWN -> 0f to speed
-                    KeyEvent.KEYCODE_DPAD_LEFT -> -speed to 0f
-                    KeyEvent.KEYCODE_DPAD_RIGHT -> speed to 0f
-                    else -> 0f to 0f
+                val dir = dpadDir(keyCode)
+                val (deltaX, deltaY) = if (dir != null) {
+                    WebViewInputPolicy.dpadDelta(dir, speed)
+                } else {
+                    0f to 0f
                 }
                 webInputKeyboardShown = false
                 setCursorVisibility(true)
@@ -1670,24 +1740,41 @@ class WebViewFragment : Fragment() {
     }
 
     private fun handleCenterClick() {
+        when (
+            WebViewInputPolicy.centerAction(
+                urlBarFocused = isBrowserCard && urlEditText?.isFocused == true,
+                toolbarShowing = isToolbarShowing,
+                toolbarItemFocused = getToolbarNavItems().any { it.isFocused },
+                inFullscreen = isInFullscreen
+            )
+        ) {
+            WebViewInputPolicy.CenterAction.OPEN_URL_BAR -> {
+                cancelPendingClick()
+                showUrlInputDialog(urlEditText?.text?.toString() ?: "")
+                return
+            }
+            WebViewInputPolicy.CenterAction.ACTIVATE_TOOLBAR -> {
+                cancelPendingClick()
+                activateFocusedToolbarItem()
+                return
+            }
+            WebViewInputPolicy.CenterAction.DEFER_PAGE_OR_FULLSCREEN -> { }
+        }
+
         clickCount++
         if (clickCount == 1) {
             clickRunnable = Runnable {
-                if (isBrowserCard && urlEditText != null && urlEditText!!.isFocused) {
-                    showUrlInputDialog(urlEditText!!.text.toString())
-                } else if (isInFullscreen) {
+                if (isInFullscreen) {
                     injectJavaScriptForVideo("if (video.paused) { video.play(); } else { video.pause(); }")
                     setCursorVisibility(true)
-                    pointerX = (fullscreenContainer.width / 2).toFloat()
-                    pointerY = (fullscreenContainer.height / 2).toFloat()
-                    updatePointerPosition()
+                    centerPointerOnHost()
                 } else {
                     performClick()
                 }
                 clickCount = 0
                 clickRunnable = null
             }
-            clickHandler.postDelayed(clickRunnable!!, doubleClickSpeed)
+            clickHandler.postDelayed(clickRunnable!!, WebViewInputPolicy.DOUBLE_CLICK_MS)
         } else if (clickCount >= 2) {
             cancelPendingClick()
             if (isInFullscreen) {
@@ -1696,6 +1783,26 @@ class WebViewFragment : Fragment() {
                 allowSiteFullscreenForUserRequest()
                 toggleFullscreen()
             }
+        }
+    }
+
+    /** True if a toolbar control had focus and was activated (Close, Back, …). */
+    private fun activateFocusedToolbarItem(): Boolean {
+        val item = getToolbarNavItems().firstOrNull { it.isFocused } ?: return false
+        if (!WebViewInputPolicy.canActivateToolbarItem(isInFullscreen, isToolbarShowing, true)) {
+            return false
+        }
+        item.performClick()
+        return true
+    }
+
+    private fun dpadDir(keyCode: Int): WebViewInputPolicy.DpadDir? {
+        return when (keyCode) {
+            KeyEvent.KEYCODE_DPAD_UP -> WebViewInputPolicy.DpadDir.UP
+            KeyEvent.KEYCODE_DPAD_DOWN -> WebViewInputPolicy.DpadDir.DOWN
+            KeyEvent.KEYCODE_DPAD_LEFT -> WebViewInputPolicy.DpadDir.LEFT
+            KeyEvent.KEYCODE_DPAD_RIGHT -> WebViewInputPolicy.DpadDir.RIGHT
+            else -> null
         }
     }
 
@@ -1708,67 +1815,82 @@ class WebViewFragment : Fragment() {
     }
 
     private fun calculatePointerSpeed(keyCode: Int): Float {
-        val baseSpeed = this.pointerSpeed
-        if (keyCode != lastMoveKeyCode) {
+        val now = System.currentTimeMillis()
+        val sameKey = keyCode == lastMoveKeyCode
+        if (!sameKey) {
             lastMoveKeyCode = keyCode
-            moveStartTime = System.currentTimeMillis()
-            return baseSpeed
+            moveStartTime = now
         }
-        val duration = System.currentTimeMillis() - moveStartTime
-        if (duration < 300L) return baseSpeed
-        val accelerationDuration = duration - 300L
-        val speedMultiplier = 1.0f + (accelerationDuration / 1500f) * 3.0f
-        return (baseSpeed * speedMultiplier).coerceAtMost(baseSpeed * 4.0f)
+        return WebViewInputPolicy.pointerSpeed(
+            WebViewInputPolicy.POINTER_SPEED_PX,
+            sameKey,
+            now - moveStartTime
+        )
+    }
+
+    private fun pointerHost(): View {
+        return if (isInFullscreen && ::fullscreenContainer.isInitialized) {
+            fullscreenContainer
+        } else if (::webView.isInitialized) {
+            webView
+        } else {
+            container
+        }
+    }
+
+    private fun clampPointerToHost() {
+        val host = pointerHost()
+        val clamped = WebViewInputPolicy.clampToHost(pointerX, pointerY, host.width, host.height)
+        pointerX = clamped.first
+        pointerY = clamped.second
+    }
+
+    private fun centerPointerOnHost() {
+        val host = pointerHost()
+        if (host.width <= 0 || host.height <= 0) return
+        pointerX = host.width / 2f
+        pointerY = host.height / 2f
+        updatePointerPosition()
     }
 
     private fun movePointer(deltaX: Float, deltaY: Float) {
         webInputKeyboardShown = false
         pointerX += deltaX
         pointerY += deltaY
+        clampPointerToHost()
 
-        val boundsView = if (isInFullscreen) fullscreenContainer else container
-        val viewWidth = boundsView.width.toFloat()
-        val viewHeight = boundsView.height.toFloat()
-
-        pointerX = pointerX.coerceIn(0f, viewWidth)
-        pointerY = pointerY.coerceIn(0f, viewHeight)
+        val host = pointerHost()
 
         if (!isInFullscreen) {
             val density = resources.displayMetrics.density
-            val toolbarThresholdShow = 15f * density
-            val toolbarThresholdHide = 80f * density
-
-            if (pointerY < toolbarThresholdShow) {
-                setToolbarVisibility(true)
-            } else if (pointerY >= toolbarThresholdHide) {
-                setToolbarVisibility(false)
+            WebViewInputPolicy.toolbarVisibilityForPointerY(pointerY, density)?.let { show ->
+                setToolbarVisibility(show)
             }
 
             updateToolbarButtonsFocus()
 
-            val scrollThresholdPx = 40f * density
+            val (dx, dy) = WebViewInputPolicy.edgePan(
+                deltaX,
+                deltaY,
+                pointerX,
+                pointerY,
+                host.width,
+                host.height,
+                WebViewInputPolicy.EDGE_PAN_DP * density,
+                WebViewInputPolicy.POINTER_SPEED_PX.toInt()
+            )
 
-            // Edge pan: the pointer is clamped to the view, so the only way to
-            // reach clipped page content is to scroll while parked at an edge.
-            var dx = 0
-            var dy = 0
-            if (deltaX < 0 && pointerX <= scrollThresholdPx) {
-                dx = -pointerSpeed.toInt()
-            } else if (deltaX > 0 && pointerX >= container.width - scrollThresholdPx) {
-                dx = pointerSpeed.toInt()
-            }
-            if (deltaY < 0 && pointerY <= scrollThresholdPx) {
-                dy = -pointerSpeed.toInt()
-            } else if (deltaY > 0 && pointerY >= container.height - scrollThresholdPx) {
-                dy = pointerSpeed.toInt()
-            }
-
-            if (dx != 0 || dy != 0) {
-                val cssX = (pointerX / density).toInt()
-                val cssY = (pointerY / density).toInt()
+            if ((dx != 0 || dy != 0) && host.width > 0 && host.height > 0) {
                 try {
                     webView.evaluateJavascript(
-                        WebViewDisplayPolicy.pageScrollJs(cssX, cssY, dx, dy),
+                        WebViewDisplayPolicy.pageScrollJs(
+                            pointerX,
+                            pointerY,
+                            host.width,
+                            host.height,
+                            dx,
+                            dy
+                        ),
                         null
                     )
                 } catch (_: Exception) {
@@ -1784,8 +1906,24 @@ class WebViewFragment : Fragment() {
     }
 
     private fun updatePointerPosition() {
-        pointer.x = pointerX - pointer.width / 2f
-        pointer.y = pointerY - pointer.height / 2f
+        if (!::pointer.isInitialized || !::pointerContainer.isInitialized) return
+        val host = pointerHost()
+        val hostLoc = IntArray(2)
+        val overlayLoc = IntArray(2)
+        host.getLocationOnScreen(hostLoc)
+        pointerContainer.getLocationOnScreen(overlayLoc)
+        val pos = WebViewInputPolicy.overlayTranslation(
+            pointerX,
+            pointerY,
+            pointer.width,
+            pointer.height,
+            hostLoc[0],
+            hostLoc[1],
+            overlayLoc[0],
+            overlayLoc[1]
+        )
+        pointer.x = pos.first
+        pointer.y = pos.second
     }
 
     private fun toggleFullscreen() {
@@ -1847,8 +1985,10 @@ class WebViewFragment : Fragment() {
         var currentFocusedIndex = items.indexOfFirst { it.isFocused }
         if (currentFocusedIndex == -1) {
             val itemLocation = IntArray(2)
+            val hostLocation = IntArray(2)
+            pointerHost().getLocationInWindow(hostLocation)
             var minDistance = Float.MAX_VALUE
-            val pointerCenterX = pointerX
+            val pointerCenterX = pointerX + hostLocation[0]
             for (i in items.indices) {
                 val item = items[i]
                 item.getLocationInWindow(itemLocation)
@@ -1877,23 +2017,17 @@ class WebViewFragment : Fragment() {
         val itemTop = itemLocation[1]
         val itemHeight = targetItem.height
 
-        val boundsView = if (isInFullscreen) fullscreenContainer else container
+        val host = pointerHost()
 
         // Target center coordinates relative to window
         val targetCenterX = itemLeft + itemWidth / 2f
         val targetCenterY = itemTop + itemHeight / 2f
 
-        // Convert window coordinate to local container coordinate
-        val containerLocation = IntArray(2)
-        boundsView.getLocationInWindow(containerLocation)
-        val localX = targetCenterX - containerLocation[0]
-        val localY = targetCenterY - containerLocation[1]
-
-        pointerX = localX
-        pointerY = localY
-
-        pointerX = pointerX.coerceIn(0f, boundsView.width.toFloat())
-        pointerY = pointerY.coerceIn(0f, boundsView.height.toFloat())
+        val hostLocation = IntArray(2)
+        host.getLocationInWindow(hostLocation)
+        pointerX = targetCenterX - hostLocation[0]
+        pointerY = targetCenterY - hostLocation[1]
+        clampPointerToHost()
 
         updatePointerPosition()
         updateToolbarButtonsFocus()
@@ -1901,9 +2035,7 @@ class WebViewFragment : Fragment() {
 
     private fun updateToolbarButtonsFocus() {
         if (isWebViewDestroyed || !isAdded || view == null) return
-        val density = resources.displayMetrics.density
-        val toolbarHeight = 56f * density
-        val isPointerInToolbar = isToolbarShowing && pointerY < toolbarHeight
+        val isPointerInToolbar = isPointerOverToolbar()
 
         if (isPointerInToolbar) {
             pointer.visibility = View.INVISIBLE
@@ -1912,7 +2044,9 @@ class WebViewFragment : Fragment() {
 
             var nearestItem: View? = null
             var minDistance = Float.MAX_VALUE
-            val pointerCenterX = pointerX
+            val hostLocation = IntArray(2)
+            pointerHost().getLocationInWindow(hostLocation)
+            val pointerCenterX = pointerX + hostLocation[0]
             val itemLocation = IntArray(2)
 
             for (item in items) {
@@ -1962,9 +2096,7 @@ class WebViewFragment : Fragment() {
         }
         if (show) {
             isCursorShowing = true
-            val density = resources.displayMetrics.density
-            val toolbarHeight = 56f * density
-            val isPointerInToolbar = isToolbarShowing && pointerY < toolbarHeight
+            val isPointerInToolbar = isPointerOverToolbar()
             if (!isPointerInToolbar) {
                 pointer.visibility = View.VISIBLE
             }
@@ -1980,7 +2112,7 @@ class WebViewFragment : Fragment() {
 
     private fun resetPointerHideTimer() {
         pointerHideHandler.removeCallbacksAndMessages(null)
-        pointerHideHandler.postDelayed({ setCursorVisibility(false) }, pointerHideDelay)
+        pointerHideHandler.postDelayed({ setCursorVisibility(false) }, WebViewInputPolicy.POINTER_HIDE_MS)
     }
 
     private fun performClick() {
@@ -1992,62 +2124,73 @@ class WebViewFragment : Fragment() {
             resetPointerHideTimer()
         }
 
-        val x = pointerX.toInt()
-        val y = pointerY.toInt()
+        if (activateFocusedToolbarItem()) return
+
+        val host = pointerHost()
+        val x = pointerX
+        val y = pointerY
         val downTime = System.currentTimeMillis()
         val eventTime = downTime + 10
-        val downEvent = MotionEvent.obtain(downTime, eventTime, MotionEvent.ACTION_DOWN, x.toFloat(), y.toFloat(), 0)
+        val downEvent = MotionEvent.obtain(downTime, eventTime, MotionEvent.ACTION_DOWN, x, y, 0)
         downEvent.source = android.view.InputDevice.SOURCE_TOUCHSCREEN
-        val upEvent = MotionEvent.obtain(downTime, eventTime, MotionEvent.ACTION_UP, x.toFloat(), y.toFloat(), 0)
+        val upEvent = MotionEvent.obtain(downTime, eventTime, MotionEvent.ACTION_UP, x, y, 0)
         upEvent.source = android.view.InputDevice.SOURCE_TOUCHSCREEN
 
+        if (WebViewInputPolicy.clickDispatch(
+                isPointerOverToolbar(),
+                ::container.isInitialized
+            ) == WebViewInputPolicy.ClickDispatch.CONTAINER
+        ) {
+            container.dispatchTouchEvent(downEvent)
+            container.dispatchTouchEvent(upEvent)
+            downEvent.recycle()
+            upEvent.recycle()
+            return
+        }
+
         if (isInFullscreen) {
-            fullscreenContainer.dispatchTouchEvent(downEvent)
-            fullscreenContainer.dispatchTouchEvent(upEvent)
+            host.dispatchTouchEvent(downEvent)
+            host.dispatchTouchEvent(upEvent)
         } else {
             // Episode / player chrome click: allow the new video to auto-fullscreen.
             allowSiteFullscreenAfterPageClick()
-            container.dispatchTouchEvent(downEvent)
-            container.dispatchTouchEvent(upEvent)
+            host.dispatchTouchEvent(downEvent)
+            host.dispatchTouchEvent(upEvent)
 
-            // Synthetic touches don't always trigger standard clicks in WebViews on newer OS versions.
-            // Execute a robust JavaScript click as a fallback.
-            val density = resources.displayMetrics.density
-            val cssX = (pointerX / density).toInt()
-            val cssY = (pointerY / density).toInt()
-            webView.evaluateJavascript("""
-                (function() {
-                    var el = document.elementFromPoint($cssX, $cssY);
-                    if (el) {
-                        el.click();
-                        el.focus();
-                    }
-                })();
-            """.trimIndent(), null)
-
-            // Try to show soft keyboard if an input field received focus.
-            webView.evaluateJavascript(
-                "document.activeElement && document.activeElement.focus && document.activeElement.focus()",
-                null
-            )
-            Handler(Looper.getMainLooper()).postDelayed({
-                if (!isWebViewDestroyed && isAdded) {
+            // Verification widgets ignore JS element.click() and IME focus.
+            // Keep the overlay pointer and native touch only.
+            if (WebViewInputPolicy.shouldInjectJsClick(isInFullscreen, isOnChallengePage)) {
+                if (host.width > 0 && host.height > 0) {
                     webView.evaluateJavascript(
-                        "(function(){var el=document.activeElement;return !!(el && (el.tagName==='INPUT' || el.tagName==='TEXTAREA' || el.isContentEditable));})()",
-                        { value ->
-                            if (value != null && "true".equals(value.trim())) {
-                                // Allow focus temporarily for IME
-                                webView.isFocusable = true
-                                webView.isFocusableInTouchMode = true
-                                webView.requestFocus()
-                                val imm = requireContext().getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-                                imm.showSoftInput(webView, InputMethodManager.SHOW_IMPLICIT)
-                                webInputKeyboardShown = true
-                            }
-                        }
+                        WebViewDisplayPolicy.clickAtViewPointJs(x, y, host.width, host.height),
+                        null
                     )
                 }
-            }, 150)
+
+                webView.evaluateJavascript(
+                    "document.activeElement && document.activeElement.focus && document.activeElement.focus()",
+                    null
+                )
+                if (WebViewInputPolicy.shouldOfferIme(isOnChallengePage)) {
+                    Handler(Looper.getMainLooper()).postDelayed({
+                        if (!isWebViewDestroyed && isAdded) {
+                            webView.evaluateJavascript(
+                                "(function(){var el=document.activeElement;return !!(el && (el.tagName==='INPUT' || el.tagName==='TEXTAREA' || el.isContentEditable));})()",
+                                { value ->
+                                    if (value != null && "true".equals(value.trim())) {
+                                        webView.isFocusable = true
+                                        webView.isFocusableInTouchMode = true
+                                        webView.requestFocus()
+                                        val imm = requireContext().getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+                                        imm.showSoftInput(webView, InputMethodManager.SHOW_IMPLICIT)
+                                        webInputKeyboardShown = true
+                                    }
+                                }
+                            )
+                        }
+                    }, 150)
+                }
+            }
         }
 
         downEvent.recycle()
@@ -2069,6 +2212,10 @@ class WebViewFragment : Fragment() {
             pauseHtmlMedia()
             webView.onPause()
             webView.keepScreenOn = false
+            try {
+                CookieManager.getInstance().flush()
+            } catch (_: Exception) {
+            }
         }
     }
 
@@ -2094,8 +2241,10 @@ class WebViewFragment : Fragment() {
         super.onHiddenChanged(hidden)
         if (!hidden) {
             // Shown again after PlaybackFragment pop (hide/add handoff).
+            setActivityOverlaysVisible(true)
             onReturnedFromNativePlayer()
         } else {
+            setActivityOverlaysVisible(false)
             stopHtmlVideoStallMonitor()
             pauseHtmlMedia()
         }
@@ -2157,12 +2306,9 @@ class WebViewFragment : Fragment() {
             viewGroup?.removeView(webView)
             webView.stopLoading()
             webView.onPause()
-            webView.clearHistory()
-            webView.clearCache(true)
-            webView.loadUrl("about:blank")
             webView.removeAllViews()
-            // Keep CookieManager / WebStorage so verification cookies survive
-            // closing the browser. Clearing them forces a new check on the next visit.
+            // Keep HTTP cache, cookies, and WebStorage so a completed check
+            // is reused on the next visit. Wiping cache forces a new check.
             try {
                 CookieManager.getInstance().flush()
             } catch (_: Exception) {
@@ -2184,14 +2330,7 @@ class WebViewFragment : Fragment() {
             } catch (_: Exception) {
                 ""
             }
-            if (def.isBlank()) {
-                return "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 " +
-                    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-            }
-            return def
-                .replace(" Mobile", "")
-                .replace("Mobile ", "")
-                .replace("; wv", "")
+            return WebChallengePolicy.desktopLayoutUserAgent(def)
         }
 
         /**
