@@ -3,10 +3,10 @@ package com.mmhw.csvtv.receiver
 import java.io.ByteArrayOutputStream
 
 /**
- * Minimal MPEG-TS muxer for a single H.264 video stream. Packets are 188 bytes
+ * Minimal MPEG-TS muxer for H.264 (and optional AAC). Packets are 188 bytes
  * so a live HTTP body can be played by ExoPlayer as `video/mp2t`.
  */
-class MpegTsMuxer {
+class MpegTsMuxer(private val includeAudio: Boolean = true) {
     private var patCc = 0
     private var pmtCc = 0
     private var videoCc = 0
@@ -113,7 +113,29 @@ class MpegTsMuxer {
         const val PID_VIDEO = 0x0100
         const val PID_AUDIO = 0x0101
 
-        fun bootstrapPsi(): ByteArray = MpegTsMuxer().psiBootstrap()
+        fun bootstrapPsi(includeAudio: Boolean = true): ByteArray =
+            MpegTsMuxer(includeAudio).psiBootstrap()
+
+        /** True when [annexB] contains an IDR slice (NAL type 5). */
+        fun isIdr(annexB: ByteArray): Boolean {
+            var i = 0
+            while (i + 3 < annexB.size) {
+                val nal = when {
+                    i + 4 < annexB.size &&
+                        annexB[i] == 0.toByte() && annexB[i + 1] == 0.toByte() &&
+                        annexB[i + 2] == 0.toByte() && annexB[i + 3] == 1.toByte() -> i + 4
+                    annexB[i] == 0.toByte() && annexB[i + 1] == 0.toByte() &&
+                        annexB[i + 2] == 1.toByte() -> i + 3
+                    else -> {
+                        i++
+                        continue
+                    }
+                }
+                if (nal < annexB.size && (annexB[nal].toInt() and 0x1F) == 5) return true
+                i = nal
+            }
+            return false
+        }
 
         fun toAnnexB(raw: ByteArray): ByteArray {
             if (raw.isEmpty()) return raw
@@ -224,7 +246,7 @@ class MpegTsMuxer {
         val pesLen = if (setLength) (8 + payload.size).coerceAtMost(65535) else 0
         header[4] = ((pesLen shr 8) and 0xFF).toByte()
         header[5] = (pesLen and 0xFF).toByte()
-        header[6] = 0x80.toByte()
+        header[6] = 0x84.toByte() // data_alignment: payload starts at an access unit
         header[7] = 0x80.toByte()
         header[8] = 0x05
         writePts(header, 9, pts90)
@@ -283,19 +305,21 @@ class MpegTsMuxer {
     }
 
     private fun pmtSection(): ByteArray {
-        val after = byteArrayOf(
+        val video = byteArrayOf(
             0x00, 0x01,
             0xC1.toByte(), 0x00, 0x00,
             (0xE0 or (PID_VIDEO shr 8)).toByte(), (PID_VIDEO and 0xFF).toByte(),
             0xF0.toByte(), 0x00,
             0x1B,
             (0xE0 or (PID_VIDEO shr 8)).toByte(), (PID_VIDEO and 0xFF).toByte(),
-            0xF0.toByte(), 0x00,
+            0xF0.toByte(), 0x00
+        )
+        val audio = byteArrayOf(
             0x0F,
             (0xE0 or (PID_AUDIO shr 8)).toByte(), (PID_AUDIO and 0xFF).toByte(),
             0xF0.toByte(), 0x00
         )
-        return psiSection(0x02, after)
+        return psiSection(0x02, if (includeAudio) video + audio else video)
     }
 
     private fun psiSection(tableId: Int, afterLength: ByteArray): ByteArray {

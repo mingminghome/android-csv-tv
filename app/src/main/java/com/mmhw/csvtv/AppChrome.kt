@@ -16,12 +16,20 @@ object AppChrome {
         activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
 
-    fun padSystemBars(activity: Activity) {
+    fun padSystemBars(activity: Activity, edgeToEdge: () -> Boolean = { false }) {
         val content = activity.findViewById<View>(android.R.id.content)
         ViewCompat.setOnApplyWindowInsetsListener(content) { v, insets ->
-            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-            v.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+            if (edgeToEdge()) {
+                v.setPadding(0, 0, 0, 0)
+            } else {
+                val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+                v.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+            }
             insets
         }
+    }
+
+    fun requestInsets(activity: Activity) {
+        ViewCompat.requestApplyInsets(activity.findViewById(android.R.id.content))
     }
 }

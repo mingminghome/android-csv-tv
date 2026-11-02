@@ -17,7 +17,6 @@ import android.widget.RelativeLayout
 import android.widget.TextView
 import androidx.activity.OnBackPressedCallback
 import androidx.fragment.app.Fragment
-import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
@@ -27,16 +26,11 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.rtmp.RtmpDataSource
-import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.hls.playlist.DefaultHlsPlaylistTracker
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
-import androidx.media3.exoplayer.DefaultRenderersFactory
-import androidx.media3.exoplayer.mediacodec.MediaCodecInfo
-import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
-import androidx.media3.exoplayer.mediacodec.MediaCodecUtil
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import okhttp3.OkHttpClient
@@ -291,66 +285,21 @@ class PlaybackFragment : Fragment() {
 
         releasePlayerSafely()
 
-        trackSelector = DefaultTrackSelector(requireContext()).apply {
-            // Prefer a stable adaptive ladder over always-max 4K when the playlist offers choices.
-            // forceHighestSupportedBitrate=false lets bandwidth estimator pick a sustainable rung.
-            parameters = buildUponParameters()
-                .setForceHighestSupportedBitrate(false)
-                .setExceedVideoConstraintsIfNecessary(true)
-                .setExceedRendererCapabilitiesIfNecessary(false)
-                .setViewportSizeToPhysicalDisplaySize(requireContext(), /* orientationMayChange= */ true)
-                .setAllowVideoMixedMimeTypeAdaptiveness(true)
-                .setAllowVideoNonSeamlessAdaptiveness(true)
-                // Never disable audio — some streams only expose audio after the first period.
-                .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, /* disabled= */ false)
-                .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, /* disabled= */ false)
-                .build()
-        }
-
-        val preferSoftware = decoderMode == DECODER_MODE_SOFTWARE
-        val codecSelector = MediaCodecSelector { mimeType, requiresSecureDecoder, requiresTunnelingDecoder ->
-            rankDecoders(
-                MediaCodecUtil.getDecoderInfos(mimeType, requiresSecureDecoder, requiresTunnelingDecoder),
-                preferSoftware = preferSoftware,
-                dropEmulatorCodecs = excludeEmulatorDecoders
-            )
-        }
-
-        // EXTENSION_RENDERER_MODE_ON: use MediaCodec first; fall back to FFmpeg for codecs
-        // Android cannot decode natively (notably audio/mpeg-L2 / MP2 common in broadcast TS).
-        val renderersFactory = DefaultRenderersFactory(requireContext())
-            .setMediaCodecSelector(codecSelector)
-            .setEnableDecoderFallback(true)
-            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
-
-        logFfmpegAvailability()
-
-        // prioritizeTimeOverSizeThresholds=false is critical: otherwise ExoPlayer ignores
-        // targetBufferBytes and keeps filling time-based windows for 4K → OOM on Fire TV.
-        val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(
-                minBufferMs,
-                maxBufferMs,
-                bufferForPlaybackMs,
-                bufferForPlaybackAfterRebufferMs
-            )
-            .setTargetBufferBytes(targetBufferBytes)
-            .setPrioritizeTimeOverSizeThresholds(false)
-            .build()
-
-        player = ExoPlayer.Builder(requireContext())
-            .setRenderersFactory(renderersFactory)
-            .setTrackSelector(trackSelector!!)
-            .setLoadControl(loadControl)
-            .build().apply {
-                // Route audio as movie/media so TV / HDMI / emulator host pick up the stream.
-                val audioAttributes = AudioAttributes.Builder()
-                    .setUsage(C.USAGE_MEDIA)
-                    .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
-                    .build()
-                setAudioAttributes(audioAttributes, /* handleAudioFocus= */ true)
-                volume = 1f
-                setHandleAudioBecomingNoisy(true)
+        val session = AppPlayer.create(
+            context = requireContext(),
+            buffers = AppPlayer.Buffers(
+                minMs = minBufferMs,
+                maxMs = maxBufferMs,
+                playbackMs = bufferForPlaybackMs,
+                rebufferMs = bufferForPlaybackAfterRebufferMs,
+                targetBytes = targetBufferBytes,
+                prioritizeTimeOverSize = false
+            ),
+            preferSoftware = decoderMode == DECODER_MODE_SOFTWARE,
+            dropEmulatorCodecs = excludeEmulatorDecoders
+        )
+        trackSelector = session.trackSelector
+        player = session.player.apply {
 
                 val mimeType = arguments?.getString("mime_type")
                 val format = Utils.determineVideoFormat(urlToPlay, mimeType)
@@ -855,61 +804,6 @@ class PlaybackFragment : Fragment() {
         }, delayMs)
     }
 
-    /**
-     * Prefer real device HW, then Google/Android software codecs.
-     * Emulator goldfish/ranchu codecs report as "hardware" but frequently hit
-     * queue timeouts (Error 0x80000000) on live streams — always rank them last,
-     * or drop them entirely after a goldfish failure.
-     */
-    private fun rankDecoders(
-        infos: List<MediaCodecInfo>,
-        preferSoftware: Boolean,
-        dropEmulatorCodecs: Boolean
-    ): MutableList<MediaCodecInfo> {
-        fun isEmulatorCodec(info: MediaCodecInfo): Boolean {
-            val n = info.name.lowercase()
-            return n.contains("goldfish") || n.contains("ranchu") || n.contains("emulator")
-        }
-        fun isGoogleSoftware(info: MediaCodecInfo): Boolean {
-            val n = info.name.lowercase()
-            return n.contains("c2.android") || n.contains("omx.google") || n.startsWith("c2.google")
-        }
-
-        val filtered = if (dropEmulatorCodecs) {
-            val without = infos.filterNot { isEmulatorCodec(it) }
-            // Keep goldfish only if it is the only option left.
-            if (without.isNotEmpty()) without else infos
-        } else {
-            infos
-        }
-
-        return filtered.sortedWith(
-            compareBy<MediaCodecInfo> { info ->
-                val emu = isEmulatorCodec(info)
-                val googleSw = isGoogleSoftware(info)
-                val realHw = info.hardwareAccelerated && !emu
-                when {
-                    preferSoftware && googleSw -> 0
-                    preferSoftware && !realHw && !emu -> 1
-                    !preferSoftware && realHw -> 0
-                    !preferSoftware && googleSw -> 1
-                    realHw -> 2
-                    googleSw -> 3
-                    emu -> 90
-                    else -> 50
-                }
-            }.thenBy { it.name }
-        ).toMutableList().also { ranked ->
-            if (Log.isLoggable(TAG, Log.DEBUG) && ranked.isNotEmpty()) {
-                Log.d(
-                    TAG,
-                    "Decoder order (preferSw=$preferSoftware dropEmu=$dropEmulatorCodecs): " +
-                        ranked.joinToString { it.name }
-                )
-            }
-        }
-    }
-
     private fun isRunningOnEmulator(): Boolean {
         val fingerprint = Build.FINGERPRINT
         val model = Build.MODEL
@@ -1038,33 +932,6 @@ class PlaybackFragment : Fragment() {
             blob.contains("L153", ignoreCase = true) ||
             blob.contains("10bit", ignoreCase = true) ||
             (blob.contains("hvc1", ignoreCase = true) && blob.contains("L15", ignoreCase = true))
-    }
-
-    private fun logFfmpegAvailability() {
-        try {
-            val clazz = Class.forName("androidx.media3.decoder.ffmpeg.FfmpegLibrary")
-            val isAvailable = clazz.getMethod("isAvailable").invoke(null) as Boolean
-            val version = if (isAvailable) {
-                clazz.getMethod("getVersion").invoke(null) as? String
-            } else {
-                null
-            }
-            val supportsMp2 = if (isAvailable) {
-                clazz.getMethod("supportsFormat", String::class.java)
-                    .invoke(null, MimeTypes.AUDIO_MPEG_L2) as Boolean
-            } else {
-                false
-            }
-            Log.i(
-                TAG,
-                "FFmpeg extension: available=$isAvailable version=$version " +
-                    "supportsMpegL2=$supportsMp2"
-            )
-        } catch (e: ClassNotFoundException) {
-            Log.w(TAG, "FFmpeg extension not on classpath — MPEG-L2/MP2 audio will be silent")
-        } catch (e: Exception) {
-            Log.w(TAG, "FFmpeg probe failed: ${e.message}")
-        }
     }
 
     /** Human-readable note for audio tracks that exist but no renderer can play. */

@@ -28,6 +28,7 @@ import android.os.HandlerThread
 import android.os.IBinder
 import android.os.PowerManager
 import android.os.Process
+import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
 import androidx.core.app.NotificationCompat
@@ -43,9 +44,10 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 class ScreenCastService : Service() {
     private val running = AtomicBoolean(false)
-    private val tsServer = LiveTsServer()
-    private val tsMux = MpegTsMuxer()
+    private var tsServer = LiveTsServer(includeAudio = false)
+    private var tsMux = MpegTsMuxer(includeAudio = false)
     private val muxLock = Any()
+    private var ptsAnchorNs = 0L
     private var worker: HandlerThread? = null
     private var handler: Handler? = null
     private var projection: MediaProjection? = null
@@ -59,6 +61,10 @@ class ScreenCastService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var codecConfig: ByteArray = ByteArray(0)
     private val firstKeyframe = AtomicBoolean(false)
+    @Volatile
+    private var lastKeyAu: ByteArray? = null
+    @Volatile
+    private var lastVideoNs = 0L
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -129,13 +135,18 @@ class ScreenCastService : Service() {
 
             acquireWake()
             firstKeyframe.set(false)
+            ptsAnchorNs = SystemClock.elapsedRealtimeNanos()
+            val audioOn = startAudio(proj)
+            tsMux = MpegTsMuxer(includeAudio = audioOn)
+            tsServer = LiveTsServer(includeAudio = audioOn)
+            tsServer.onClient = { requestKeyframe() }
             val ip = LanAddress.ipv4(this)
             val url = tsServer.start(ip)
             publicUrl = url
-            Log.i(TAG, "live $url")
-            startAudio(proj)
+            Log.i(TAG, "live $url audio=$audioOn")
             startEncoder(proj)
             requestKeyframe()
+            handler?.postDelayed(repeatLastFrame, 400)
             handler?.postDelayed(object : Runnable {
                 override fun run() {
                     if (!running.get()) return
@@ -176,6 +187,14 @@ class ScreenCastService : Service() {
         format.setInteger(MediaFormat.KEY_FRAME_RATE, 30)
         format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
         format.setInteger(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, 1_000_000)
+        format.setInteger(
+            MediaFormat.KEY_PROFILE,
+            MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline
+        )
+        if (Build.VERSION.SDK_INT >= 23) {
+            format.setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel31)
+            format.setInteger(MediaFormat.KEY_PRIORITY, 0)
+        }
 
         val enc = configureEncoder(format, width, height, bitrate)
         codec = enc
@@ -271,19 +290,44 @@ class ScreenCastService : Service() {
             return
         }
         val frame = MpegTsMuxer.toAnnexB(raw)
-        val key = info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0
+        val key = info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0 ||
+            MpegTsMuxer.isIdr(frame)
+        if (!key && !firstKeyframe.get()) {
+            return
+        }
         val au = ByteArrayOutputStream(frame.size + codecConfig.size + 16)
         au.write(MpegTsMuxer.audNal())
         if (key && codecConfig.isNotEmpty()) {
             au.write(codecConfig)
         }
         au.write(frame)
-        val packets = synchronized(muxLock) {
-            tsMux.muxVideo(au.toByteArray(), info.presentationTimeUs, key)
+        val accessUnit = au.toByteArray()
+        if (key) {
+            lastKeyAu = accessUnit
         }
-        tsServer.push(packets, 0, packets.size)
+        lastVideoNs = SystemClock.elapsedRealtimeNanos()
+        val packets = synchronized(muxLock) {
+            tsMux.muxVideo(accessUnit, ptsUs(), key)
+        }
+        tsServer.push(packets, 0, packets.size, keyframe = key)
         if (key && firstKeyframe.compareAndSet(false, true)) {
             urlReady?.countDown()
+        }
+    }
+
+    private val repeatLastFrame = object : Runnable {
+        override fun run() {
+            if (!running.get()) return
+            val idleNs = SystemClock.elapsedRealtimeNanos() - lastVideoNs
+            val au = lastKeyAu
+            if (au != null && lastVideoNs > 0L && idleNs > 400_000_000L) {
+                val packets = synchronized(muxLock) {
+                    tsMux.muxVideo(au, ptsUs(), true)
+                }
+                tsServer.push(packets, 0, packets.size, keyframe = true)
+                lastVideoNs = SystemClock.elapsedRealtimeNanos()
+            }
+            handler?.postDelayed(this, 400)
         }
     }
 
@@ -313,13 +357,17 @@ class ScreenCastService : Service() {
         return out.toByteArray()
     }
 
-    private fun startAudio(proj: MediaProjection) {
-        if (Build.VERSION.SDK_INT < 29) return
+    private fun ptsUs(): Long {
+        return (SystemClock.elapsedRealtimeNanos() - ptsAnchorNs) / 1_000L
+    }
+
+    private fun startAudio(proj: MediaProjection): Boolean {
+        if (Build.VERSION.SDK_INT < 29) return false
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) !=
             PackageManager.PERMISSION_GRANTED
         ) {
             Log.i(TAG, "screen audio skipped: no RECORD_AUDIO")
-            return
+            return false
         }
         try {
             val capture = AudioPlaybackCaptureConfiguration.Builder(proj)
@@ -362,8 +410,10 @@ class ScreenCastService : Service() {
                 start()
             }
             Log.i(TAG, "screen audio capture on")
+            return true
         } catch (e: Exception) {
             Log.w(TAG, "screen audio", e)
+            return false
         }
     }
 
@@ -419,9 +469,9 @@ class ScreenCastService : Service() {
                     buf.get(aac)
                     val adts = MpegTsMuxer.adtsFrame(aac)
                     val packets = synchronized(muxLock) {
-                        tsMux.muxAudio(adts, info.presentationTimeUs)
+                        tsMux.muxAudio(adts, ptsUs())
                     }
-                    tsServer.push(packets, 0, packets.size)
+                    tsServer.push(packets, 0, packets.size, keyframe = false)
                 }
                 enc.releaseOutputBuffer(idx, false)
             } catch (e: Exception) {
@@ -433,6 +483,10 @@ class ScreenCastService : Service() {
 
     private fun teardown() {
         running.set(false)
+        lastKeyAu = null
+        lastVideoNs = 0L
+        tsServer.onClient = null
+        handler?.removeCallbacks(repeatLastFrame)
         try {
             virtualDisplay?.release()
         } catch (_: Exception) {

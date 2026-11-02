@@ -1,6 +1,7 @@
 package com.mmhw.csvtv.receiver
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -79,5 +80,34 @@ class MpegTsMuxerTest {
         assertEquals(MpegTsMuxer.PACKET * 2, psi.size)
         assertEquals(0x47, psi[0].toInt() and 0xff)
         assertEquals(0x47, psi[MpegTsMuxer.PACKET].toInt() and 0xff)
+    }
+
+    @Test
+    fun isIdrDetectsNalType5() {
+        val idr = byteArrayOf(0, 0, 0, 1, 0x65, 0x00)
+        assertTrue(MpegTsMuxer.isIdr(idr))
+        val shortStart = byteArrayOf(0, 0, 1, 0x65)
+        assertTrue(MpegTsMuxer.isIdr(shortStart))
+        val pSlice = byteArrayOf(0, 0, 0, 1, 0x41, 0x00)
+        assertFalse(MpegTsMuxer.isIdr(pSlice))
+        val sps = byteArrayOf(0, 0, 0, 1, 0x67, 0x42)
+        assertFalse(MpegTsMuxer.isIdr(sps))
+    }
+
+    @Test
+    fun videoOnlyPmtOmitsAacStream() {
+        val withAudio = MpegTsMuxer.bootstrapPsi(includeAudio = true)
+        val videoOnly = MpegTsMuxer.bootstrapPsi(includeAudio = false)
+        fun pmtSectionLen(psi: ByteArray): Int {
+            val pmt = MpegTsMuxer.PACKET
+            return ((psi[pmt + 6].toInt() and 0x0F) shl 8) or (psi[pmt + 7].toInt() and 0xFF)
+        }
+        assertTrue(pmtSectionLen(withAudio) > pmtSectionLen(videoOnly))
+        val pmt = videoOnly.copyOfRange(MpegTsMuxer.PACKET, videoOnly.size)
+        assertTrue(pmt.contains(0x1B.toByte()))
+        val videoEs = pmt.indexOf(0x1B.toByte())
+        assertTrue(videoEs >= 0)
+        val afterVideoEs = videoEs + 5
+        assertTrue(afterVideoEs >= pmt.size || pmt[afterVideoEs] != 0x0F.toByte())
     }
 }

@@ -11,6 +11,7 @@
         layout="@layout/include_app_toolbar" />
 
     <View
+        android:id="@+id/receive_toolbar_rule"
         android:layout_width="match_parent"
         android:layout_height="1dp"
         android:background="#22FFFFFF" />
@@ -170,6 +171,15 @@
             android:layout_margin="@dimen/page_gap"
             android:drawableStart="@drawable/ic_arrow_back"
             android:text="@string/send_close"
+            android:visibility="gone" />
+
+        <ImageButton
+            android:id="@+id/receive_screen_size"
+            style="@style/AppToolbarIconButton"
+            android:layout_gravity="bottom|end"
+            android:layout_margin="20dp"
+            android:contentDescription="@string/receiver_screen_fit"
+            android:src="@drawable/ic_screen_fit"
             android:visibility="gone" />
     </FrameLayout>
 </LinearLayout>

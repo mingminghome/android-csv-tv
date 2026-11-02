@@ -10,6 +10,8 @@
     <string name="receiver_ready_hint">Waiting for a photo, video, audio, web page, or screen from Send on this Wi-Fi</string>
     <string name="receiver_waiting">Waiting for something to play…</string>
     <string name="receiver_retrying">Connecting to the screen cast…</string>
+    <string name="receiver_screen_fill">Fill screen</string>
+    <string name="receiver_screen_fit">Fit screen</string>
     <string name="receiver_album_index">%1$d / %2$d</string>
     <string name="receiver_album_paused">Paused  %1$d / %2$d</string>
     <string name="receiver_album_empty">Could not load the collection</string>

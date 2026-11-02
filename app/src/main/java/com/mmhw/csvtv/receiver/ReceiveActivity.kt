@@ -4,6 +4,7 @@ import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.view.GestureDetector
 import android.view.KeyEvent
@@ -11,11 +12,15 @@ import android.view.MotionEvent
 import android.view.View
 import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.TextView
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import com.mmhw.csvtv.AppChrome
+import com.mmhw.csvtv.AppPlayer
 import com.mmhw.csvtv.MainActivity
 import com.mmhw.csvtv.WebViewFragment
 import androidx.media3.common.MediaItem
@@ -24,12 +29,11 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
-import androidx.media3.exoplayer.DefaultLoadControl
-import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.extractor.ts.DefaultTsPayloadReaderFactory
+import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.bumptech.glide.Glide
 import com.mmhw.csvtv.AppToolbar
@@ -47,7 +51,9 @@ class ReceiveActivity : AppCompatActivity(), NativeReceiver.Listener, WebViewFra
 
     private lateinit var idle: View
     private lateinit var toolbar: View
+    private lateinit var toolbarRule: View
     private lateinit var mediaBack: Button
+    private lateinit var sizeButton: ImageButton
     private lateinit var photo: ImageView
     private lateinit var playerView: PlayerView
     private lateinit var webHost: FrameLayout
@@ -63,6 +69,13 @@ class ReceiveActivity : AppCompatActivity(), NativeReceiver.Listener, WebViewFra
     private var pendingKind: Int = NativeReceiver.MEDIA_UNKNOWN
     private var liveTs = false
     private var liveRetries = 0
+    private var liveFullscreen = false
+    private var fillScreen = true
+    private var playerLive = false
+    private var liveBufferLevel = LiveBufferPolicy.startLevel
+    private var liveReadyOnce = false
+    private var lastBufferAdjustMs = 0L
+    private val liveStableCheck = Runnable { onLivePlaybackStable() }
     private var album: Album? = null
     private var albumIndex = 0
     private var albumPaused = false
@@ -76,11 +89,13 @@ class ReceiveActivity : AppCompatActivity(), NativeReceiver.Listener, WebViewFra
         super.onCreate(savedInstanceState)
         AppChrome.prepare(this)
         setContentView(R.layout.activity_receive)
-        AppChrome.padSystemBars(this)
+        AppChrome.padSystemBars(this) { liveFullscreen }
 
         idle = findViewById(R.id.receive_idle)
         toolbar = findViewById(R.id.app_toolbar)
+        toolbarRule = findViewById(R.id.receive_toolbar_rule)
         mediaBack = findViewById(R.id.receive_media_back)
+        sizeButton = findViewById(R.id.receive_screen_size)
         photo = findViewById(R.id.receive_photo)
         playerView = findViewById(R.id.receive_player)
         webHost = findViewById(R.id.receive_web_host)
@@ -106,6 +121,7 @@ class ReceiveActivity : AppCompatActivity(), NativeReceiver.Listener, WebViewFra
             }
         }
         mediaBack.setOnClickListener { handleReceiveBack() }
+        sizeButton.setOnClickListener { toggleScreenSize() }
         findViewById<Button>(R.id.receive_confirm_accept).setOnClickListener { acceptPending() }
         findViewById<Button>(R.id.receive_confirm_decline).setOnClickListener { declinePending() }
         albumGestures = GestureDetector(this, albumGestureListener())
@@ -170,6 +186,7 @@ class ReceiveActivity : AppCompatActivity(), NativeReceiver.Listener, WebViewFra
 
     override fun onDestroy() {
         NativeReceiver.removeListener(this)
+        main.removeCallbacks(liveStableCheck)
         stopAlbum()
         releasePlayer()
         photo.setImageDrawable(null)
@@ -256,6 +273,7 @@ class ReceiveActivity : AppCompatActivity(), NativeReceiver.Listener, WebViewFra
         currentUri = uri
         errorView.visibility = View.GONE
         titleView.text = title?.takeIf { it.isNotBlank() } ?: getString(R.string.receiver_idle_title)
+        clearLiveChrome()
 
         if (Album.isAlbum(uri, mime)) {
             hideWeb()
@@ -295,16 +313,20 @@ class ReceiveActivity : AppCompatActivity(), NativeReceiver.Listener, WebViewFra
         idle.visibility = View.GONE
         playerView.visibility = View.VISIBLE
         playVideo(uri, mime)
+        applyLiveChrome()
     }
 
     private fun playVideo(uri: String, mime: String?) {
-        ensurePlayer()
-        val p = player ?: return
         val path = uri.substringBefore('?').substringBefore('#').lowercase()
         liveTs = mime?.contains("mp2t") == true ||
             mime?.contains("mpegts") == true ||
             path.endsWith(".ts")
         liveRetries = 0
+        if (liveTs) {
+            resetLiveBuffer()
+        }
+        ensurePlayer(live = liveTs)
+        val p = player ?: return
         if (liveTs) {
             playLiveTs(p, uri)
             return
@@ -334,13 +356,16 @@ class ReceiveActivity : AppCompatActivity(), NativeReceiver.Listener, WebViewFra
                 DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES or
                     DefaultTsPayloadReaderFactory.FLAG_DETECT_ACCESS_UNITS
             )
-            .setTsExtractorTimestampSearchBytes(188 * 2_000)
+            .setTsExtractorTimestampSearchBytes(188 * 200)
+        val buf = LiveBufferPolicy.profile(liveBufferLevel)
         val item = MediaItem.Builder()
             .setUri(uri)
             .setMimeType(MimeTypes.VIDEO_MP2T)
             .setLiveConfiguration(
                 MediaItem.LiveConfiguration.Builder()
-                    .setTargetOffsetMs(1_200)
+                    .setTargetOffsetMs(buf.targetOffsetMs.toLong())
+                    .setMinOffsetMs(buf.minOffsetMs.toLong())
+                    .setMaxOffsetMs(buf.maxOffsetMs.toLong())
                     .build()
             )
             .build()
@@ -348,6 +373,53 @@ class ReceiveActivity : AppCompatActivity(), NativeReceiver.Listener, WebViewFra
         p.setMediaSource(source)
         p.prepare()
         p.play()
+    }
+
+    private fun resetLiveBuffer() {
+        main.removeCallbacks(liveStableCheck)
+        liveBufferLevel = LiveBufferPolicy.startLevel
+        liveReadyOnce = false
+        lastBufferAdjustMs = 0L
+    }
+
+    private fun onLivePlaybackState(state: Int) {
+        when (state) {
+            Player.STATE_READY -> {
+                liveReadyOnce = true
+                errorView.visibility = View.GONE
+                main.removeCallbacks(liveStableCheck)
+                main.postDelayed(liveStableCheck, LiveBufferPolicy.stableAfterMs)
+            }
+            Player.STATE_BUFFERING -> {
+                if (!liveReadyOnce) return
+                main.removeCallbacks(liveStableCheck)
+                applyLiveBuffer(LiveBufferPolicy.afterRebuffer(liveBufferLevel), rebuild = true)
+            }
+        }
+    }
+
+    private fun onLivePlaybackStable() {
+        if (isDestroyed || !liveTs) return
+        if (player?.playbackState != Player.STATE_READY) return
+        applyLiveBuffer(LiveBufferPolicy.afterStable(liveBufferLevel), rebuild = true)
+    }
+
+    private fun applyLiveBuffer(newLevel: Int, rebuild: Boolean) {
+        val level = newLevel.coerceIn(0, LiveBufferPolicy.maxLevel)
+        val now = SystemClock.elapsedRealtime()
+        if (level == liveBufferLevel) return
+        if (!LiveBufferPolicy.shouldAdjust(now, lastBufferAdjustMs)) return
+        liveBufferLevel = level
+        lastBufferAdjustMs = now
+        Log.i("ReceiveActivity", "live buffer level=$level")
+        if (!rebuild || !liveTs) return
+        val uri = currentUri ?: return
+        liveReadyOnce = false
+        main.removeCallbacks(liveStableCheck)
+        releasePlayer()
+        ensurePlayer(live = true)
+        val p = player ?: return
+        playLiveTs(p, uri)
     }
 
     private fun loadAlbum(url: String) {
@@ -506,7 +578,80 @@ class ReceiveActivity : AppCompatActivity(), NativeReceiver.Listener, WebViewFra
 
     private fun showReceiveChrome(media: Boolean, overlayBack: Boolean = media) {
         toolbar.visibility = if (media) View.GONE else View.VISIBLE
+        toolbarRule.visibility = if (media) View.GONE else View.VISIBLE
         mediaBack.visibility = if (overlayBack) View.VISIBLE else View.GONE
+        if (!liveTs) {
+            sizeButton.visibility = View.GONE
+        }
+    }
+
+    private fun clearLiveChrome() {
+        liveTs = false
+        liveRetries = 0
+        resetLiveBuffer()
+        if (this::sizeButton.isInitialized) {
+            sizeButton.visibility = View.GONE
+        }
+        if (this::playerView.isInitialized) {
+            playerView.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+        }
+        setLiveFullscreen(false)
+    }
+
+    private fun applyLiveChrome() {
+        if (!liveTs) {
+            clearLiveChrome()
+            return
+        }
+        mediaBack.visibility = View.GONE
+        playerView.useController = false
+        playerView.hideController()
+        sizeButton.visibility = View.VISIBLE
+        setLiveFullscreen(true)
+        applyScreenSize()
+        sizeButton.requestFocus()
+    }
+
+    private fun toggleScreenSize() {
+        fillScreen = !fillScreen
+        applyScreenSize()
+    }
+
+    private fun applyScreenSize() {
+        playerView.resizeMode = if (fillScreen) {
+            AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+        } else {
+            AspectRatioFrameLayout.RESIZE_MODE_FIT
+        }
+        if (fillScreen) {
+            sizeButton.setImageResource(R.drawable.ic_screen_fit)
+            sizeButton.contentDescription = getString(R.string.receiver_screen_fit)
+        } else {
+            sizeButton.setImageResource(R.drawable.ic_screen_fill)
+            sizeButton.contentDescription = getString(R.string.receiver_screen_fill)
+        }
+    }
+
+    private fun setLiveFullscreen(on: Boolean) {
+        if (liveFullscreen == on) {
+            if (on) hideSystemBars() else showSystemBars()
+            return
+        }
+        liveFullscreen = on
+        AppChrome.requestInsets(this)
+        if (on) hideSystemBars() else showSystemBars()
+    }
+
+    private fun hideSystemBars() {
+        val controller = WindowInsetsControllerCompat(window, window.decorView)
+        controller.hide(WindowInsetsCompat.Type.systemBars())
+        controller.systemBarsBehavior =
+            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+    }
+
+    private fun showSystemBars() {
+        WindowInsetsControllerCompat(window, window.decorView)
+            .show(WindowInsetsCompat.Type.systemBars())
     }
 
     /** Stop the current photo, video, page, or slideshow. False when already idle. */
@@ -559,8 +704,6 @@ class ReceiveActivity : AppCompatActivity(), NativeReceiver.Listener, WebViewFra
 
     private fun showIdle() {
         currentUri = null
-        liveTs = false
-        liveRetries = 0
         hideConfirm()
         stopAlbum()
         releasePlayer()
@@ -568,10 +711,12 @@ class ReceiveActivity : AppCompatActivity(), NativeReceiver.Listener, WebViewFra
         photo.setImageDrawable(null)
         photo.visibility = View.GONE
         playerView.visibility = View.GONE
+        playerView.useController = true
         idle.visibility = View.VISIBLE
         errorView.visibility = View.GONE
         titleView.text = getString(R.string.receiver_idle_title)
         hint.text = idleHint()
+        clearLiveChrome()
         showReceiveChrome(media = false)
     }
 
@@ -628,20 +773,35 @@ class ReceiveActivity : AppCompatActivity(), NativeReceiver.Listener, WebViewFra
         }
     }
 
-    private fun ensurePlayer() {
-        if (player != null) return
-        val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(800, 4_000, 300, 800)
-            .build()
-        val renderers = DefaultRenderersFactory(this).setEnableDecoderFallback(true)
-        val p = ExoPlayer.Builder(this)
-            .setRenderersFactory(renderers)
-            .setLoadControl(loadControl)
-            .build()
+    private fun ensurePlayer(live: Boolean = false) {
+        if (player != null && playerLive == live) return
+        if (player != null) releasePlayer()
+        val buffers = if (live) {
+            val buf = LiveBufferPolicy.profile(liveBufferLevel)
+            AppPlayer.Buffers(
+                minMs = buf.minBufferMs,
+                maxMs = buf.maxBufferMs,
+                playbackMs = buf.playbackMs,
+                rebufferMs = buf.rebufferMs,
+                prioritizeTimeOverSize = true
+            )
+        } else {
+            AppPlayer.Buffers(
+                minMs = 800,
+                maxMs = 4_000,
+                playbackMs = 300,
+                rebufferMs = 800
+            )
+        }
+        val p = AppPlayer.create(this, buffers).player
         p.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_ENDED && album != null) {
                     showAlbumItem(albumIndex + 1)
+                    return
+                }
+                if (liveTs) {
+                    onLivePlaybackState(playbackState)
                 }
             }
 
@@ -651,18 +811,20 @@ class ReceiveActivity : AppCompatActivity(), NativeReceiver.Listener, WebViewFra
                     photo.postDelayed(albumAdvance, 1_200)
                     return
                 }
-                if (liveTs && liveRetries < 6 && !isDestroyed) {
+                val liveUri = currentUri
+                if (liveTs && liveUri != null && liveRetries < 8 && !isDestroyed) {
                     liveRetries++
+                    applyLiveBuffer(LiveBufferPolicy.afterError(liveBufferLevel), rebuild = false)
+                    Log.w("ReceiveActivity", "live retry $liveRetries: $detail")
                     errorView.visibility = View.VISIBLE
                     errorView.text = getString(R.string.receiver_retrying)
                     playerView.postDelayed({
-                        if (isDestroyed) return@postDelayed
-                        try {
-                            player?.prepare()
-                            player?.play()
-                        } catch (_: Exception) {
-                        }
-                    }, 250L * liveRetries)
+                        if (isDestroyed || !liveTs || currentUri != liveUri) return@postDelayed
+                        releasePlayer()
+                        ensurePlayer(live = true)
+                        val player = player ?: return@postDelayed
+                        playLiveTs(player, liveUri)
+                    }, 300L * liveRetries)
                     return
                 }
                 errorView.visibility = View.VISIBLE
@@ -671,12 +833,14 @@ class ReceiveActivity : AppCompatActivity(), NativeReceiver.Listener, WebViewFra
         })
         playerView.player = p
         player = p
+        playerLive = live
     }
 
     private fun releasePlayer() {
         playerView.player = null
         player?.release()
         player = null
+        playerLive = false
     }
 
     private fun showWeb(uri: String) {
