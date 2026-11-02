@@ -15,16 +15,63 @@ object WebViewDisplayPolicy {
     /**
      * Desktop layout width without pinning scale at 1.0, so
      * [android.webkit.WebSettings.loadWithOverviewMode] can shrink the page
-     * to fit. `user-scalable` lets remaining overflow be panned.
+     * to fit. Width follows the screen, not `innerWidth`, which overview-mode
+     * and a previous viewport freeze.
      */
     fun desktopViewportJs(): String = """
         (function() {
             try {
-                var inner = Math.max(
-                    window.innerWidth || 0,
-                    document.documentElement ? document.documentElement.clientWidth : 0
-                );
-                var layoutWidth = Math.max($DESKTOP_MIN_LAYOUT_WIDTH, inner);
+                window.__csvtvViewportMode = 'desktop';
+                function layoutWidth() {
+                    var screenW = 0;
+                    if (window.screen) {
+                        screenW = Math.max(window.screen.width || 0, window.screen.height || 0);
+                    }
+                    var outer = window.outerWidth || 0;
+                    return Math.max($DESKTOP_MIN_LAYOUT_WIDTH, screenW, outer);
+                }
+                function apply() {
+                    if (window.__csvtvViewportMode !== 'desktop') return;
+                    var meta = document.querySelector('meta[name="viewport"]');
+                    if (!meta) {
+                        meta = document.createElement('meta');
+                        meta.setAttribute('name', 'viewport');
+                        (document.head || document.documentElement).appendChild(meta);
+                    }
+                    var content = 'width=' + layoutWidth() +
+                        ', user-scalable=yes, minimum-scale=0.25, maximum-scale=5.0';
+                    if (meta.getAttribute('content') === content) return;
+                    meta.setAttribute('content', content);
+                    var de = document.documentElement;
+                    var b = document.body;
+                    if (de && b) {
+                        var needX = Math.max(de.scrollWidth, b.scrollWidth) > (window.innerWidth || de.clientWidth) + 4;
+                        var needY = Math.max(de.scrollHeight, b.scrollHeight) > (window.innerHeight || de.clientHeight) + 4;
+                        if (needX) {
+                            de.style.setProperty('overflow-x', 'auto', 'important');
+                            b.style.setProperty('overflow-x', 'auto', 'important');
+                        }
+                        if (needY) {
+                            de.style.setProperty('overflow-y', 'auto', 'important');
+                            b.style.setProperty('overflow-y', 'auto', 'important');
+                        }
+                    }
+                }
+                apply();
+                if (!window.__csvtvDesktopVpBound) {
+                    window.__csvtvDesktopVpBound = true;
+                    window.addEventListener('resize', apply);
+                    window.addEventListener('orientationchange', apply);
+                }
+            } catch (e) {}
+        })();
+    """.trimIndent()
+
+    /** Restore a mobile layout after desktop mode so width is not left at 1280+. */
+    fun mobileViewportJs(): String = """
+        (function() {
+            try {
+                window.__csvtvViewportMode = 'mobile';
                 var meta = document.querySelector('meta[name="viewport"]');
                 if (!meta) {
                     meta = document.createElement('meta');
@@ -33,22 +80,17 @@ object WebViewDisplayPolicy {
                 }
                 meta.setAttribute(
                     'content',
-                    'width=' + layoutWidth +
-                    ', user-scalable=yes, minimum-scale=0.25, maximum-scale=5.0'
+                    'width=device-width, initial-scale=1, user-scalable=yes, minimum-scale=0.25, maximum-scale=5.0'
                 );
                 var de = document.documentElement;
                 var b = document.body;
-                if (de && b) {
-                    var needX = Math.max(de.scrollWidth, b.scrollWidth) > (window.innerWidth || de.clientWidth) + 4;
-                    var needY = Math.max(de.scrollHeight, b.scrollHeight) > (window.innerHeight || de.clientHeight) + 4;
-                    if (needX) {
-                        de.style.setProperty('overflow-x', 'auto', 'important');
-                        b.style.setProperty('overflow-x', 'auto', 'important');
-                    }
-                    if (needY) {
-                        de.style.setProperty('overflow-y', 'auto', 'important');
-                        b.style.setProperty('overflow-y', 'auto', 'important');
-                    }
+                if (de) {
+                    de.style.removeProperty('overflow-x');
+                    de.style.removeProperty('overflow-y');
+                }
+                if (b) {
+                    b.style.removeProperty('overflow-x');
+                    b.style.removeProperty('overflow-y');
                 }
             } catch (e) {}
         })();

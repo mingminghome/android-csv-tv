@@ -597,7 +597,7 @@ class WebViewFragment : Fragment() {
                 isLoading = true
                 isOnChallengePage = WebChallengePolicy.isChallengeUrl(url)
                 if (!isOnChallengePage) {
-                    injectDesktopViewportIfNeeded()
+                    injectLayoutViewport()
                 }
                 // Navigating to a different page: allow handoff of streams again.
                 if (!url.isNullOrBlank() &&
@@ -638,7 +638,7 @@ class WebViewFragment : Fragment() {
                             if (!challenge) {
                                 injectBrowserClipboardGuard()
                                 injectOverlayCleaner()
-                                injectDesktopViewportIfNeeded()
+                                injectLayoutViewport()
                             }
                             // SPA / reload can replace the document; keep the Back-exit lock.
                             if (fullscreenGate.suppressUntilUserAction) {
@@ -766,7 +766,7 @@ class WebViewFragment : Fragment() {
                     refreshChallengeState(view?.url)
                 }
                 if (newProgress >= 40 && !isOnChallengePage) {
-                    injectDesktopViewportIfNeeded()
+                    injectLayoutViewport()
                 }
             }
 
@@ -1413,17 +1413,31 @@ class WebViewFragment : Fragment() {
             webView.settings.userAgentString =
                 if (enabled) desktopUserAgent(webView.context) else null
             webView.settings.useWideViewPort = true
-            webView.settings.loadWithOverviewMode = true
             webView.settings.setSupportZoom(true)
             webView.settings.builtInZoomControls = true
             webView.settings.displayZoomControls = false
+            resetOverviewScale()
+            injectLayoutViewport()
         }
         updateDesktopToggleUi()
         if (announce) {
             showToast(if (enabled) "Requesting Desktop Site" else "Requesting Mobile Site")
         }
         if (reload && ::webView.isInitialized && !isWebViewDestroyed) {
+            resetOverviewScale()
             webView.reload()
+        }
+    }
+
+    /** Overview-mode only fits at the start of a load. Bounce it and clear a stuck 100% zoom. */
+    private fun resetOverviewScale() {
+        if (!::webView.isInitialized || isWebViewDestroyed) return
+        try {
+            webView.settings.loadWithOverviewMode = false
+            webView.setInitialScale(0)
+            webView.settings.loadWithOverviewMode = true
+            webView.setInitialScale(0)
+        } catch (_: Exception) {
         }
     }
 
@@ -1440,11 +1454,16 @@ class WebViewFragment : Fragment() {
         }
     }
 
-    private fun injectDesktopViewportIfNeeded() {
-        if (!isDesktopMode || isWebViewDestroyed || !::webView.isInitialized) return
+    private fun injectLayoutViewport() {
+        if (isWebViewDestroyed || !::webView.isInitialized) return
         if (isOnChallengePage || WebChallengePolicy.isChallengeUrl(webView.url)) return
+        val js = if (isDesktopMode) {
+            WebViewDisplayPolicy.desktopViewportJs()
+        } else {
+            WebViewDisplayPolicy.mobileViewportJs()
+        }
         try {
-            webView.evaluateJavascript(WebViewDisplayPolicy.desktopViewportJs(), null)
+            webView.evaluateJavascript(js, null)
         } catch (_: Exception) {
         }
     }

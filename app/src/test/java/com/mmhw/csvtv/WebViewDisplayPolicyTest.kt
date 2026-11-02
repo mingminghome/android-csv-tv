@@ -10,13 +10,27 @@ class WebViewDisplayPolicyTest {
     @Test
     fun desktopViewport_usesMinWidthWithoutLockingScale() {
         val js = WebViewDisplayPolicy.desktopViewportJs()
-        assertTrue(js.contains("width=' + layoutWidth"))
+        assertTrue(js.contains("width=' + layoutWidth()"))
         assertTrue(js.contains("Math.max(${WebViewDisplayPolicy.DESKTOP_MIN_LAYOUT_WIDTH}"))
+        assertTrue(js.contains("window.screen"))
+        assertTrue(js.contains("outerWidth"))
+        assertTrue(js.contains("addEventListener('resize'"))
+        assertTrue(js.contains("orientationchange"))
         assertTrue(js.contains("user-scalable=yes"))
         assertTrue(js.contains("minimum-scale=0.25"))
         assertFalse(js.contains("initial-scale=1"))
         assertTrue(js.contains("overflow-x"))
         assertTrue(js.contains("overflow-y"))
+        assertFalse(js.contains("window.innerWidth || 0,\n                    document.documentElement"))
+    }
+
+    @Test
+    fun mobileViewport_restoresDeviceWidth() {
+        val js = WebViewDisplayPolicy.mobileViewportJs()
+        assertTrue(js.contains("width=device-width"))
+        assertTrue(js.contains("initial-scale=1"))
+        assertTrue(js.contains("__csvtvViewportMode = 'mobile'"))
+        assertTrue(js.contains("removeProperty('overflow-x')"))
     }
 
     @Test
