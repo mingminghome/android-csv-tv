@@ -139,7 +139,7 @@ If the sheet cannot be loaded, or it parses to zero videos, the app keeps the Se
 
 Send and Receive share a 3-dot menu on the toolbar for **Auto connect** and **Encryption**. Settings lists the same options under **Cast**. Encryption is off by default. Turn it on and set the same passphrase on both devices. Local files and `http` media are encrypted on this Wi-Fi. `https` links stay a direct fetch. With encryption on, Send only plays to a matching receiver. Discovery and the title stay visible.
 
-The LAN library is [castify](https://github.com/mingminghome/csvtv-receiver) (MIT). Gradle builds it into the app when the Android NDK is available. Shared collections are hosted and shown as a slideshow by the app.
+The LAN library is [castify](https://github.com/mingminghome/castify) (MIT). Gradle builds it into the app when the Android NDK is available. Shared collections are hosted and shown as a slideshow by the app.
 
 ## Known Issues
 
@@ -188,7 +188,7 @@ This project is licensed under the **MIT License** — see the [LICENSE](LICENSE
 
 - [Android Leanback Library](https://developer.android.com/training/tv/start/layouts) for the TV-friendly UI.
 - [ExoPlayer (Media3)](https://github.com/androidx/media) for video playback.
-- [castify](https://github.com/mingminghome/csvtv-receiver) for LAN send and receive.
+- [castify](https://github.com/mingminghome/castify) for LAN send and receive.
 - [OpenCSV](https://opencsv.sourceforge.net/) for CSV parsing.
 - [OkHttp](https://square.github.io/okhttp/) for HTTP requests.
 
