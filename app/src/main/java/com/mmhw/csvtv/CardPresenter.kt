@@ -91,10 +91,12 @@ class CardPresenter(private val fragment: Fragment) : Presenter() {
 
         val urlTrimmed = video.url?.trim() ?: ""
 
-        // Handle settings, refresh, update & browser special cards
-        if (urlTrimmed.equals("settings", ignoreCase = true) || 
-            urlTrimmed.equals("refresh", ignoreCase = true) || 
+        // Handle settings, refresh, update, receive & browser special cards
+        if (urlTrimmed.equals("settings", ignoreCase = true) ||
+            urlTrimmed.equals("refresh", ignoreCase = true) ||
             urlTrimmed.equals("update", ignoreCase = true) ||
+            urlTrimmed.equals("receive", ignoreCase = true) ||
+            urlTrimmed.equals("send", ignoreCase = true) ||
             urlTrimmed.equals("browser", ignoreCase = true)) {
             titleText.text = video.title
             resolutionBadge.visibility = View.GONE
@@ -104,11 +106,13 @@ class CardPresenter(private val fragment: Fragment) : Presenter() {
             channelsBadge.visibility = View.GONE
             sourceBadge.visibility = View.GONE
             infoLayout.visibility = View.GONE
- 
+
             val iconDrawable = when {
                 urlTrimmed.equals("settings", ignoreCase = true) -> R.drawable.ic_settings_icon
                 urlTrimmed.equals("refresh", ignoreCase = true) -> R.drawable.ic_refresh_icon
                 urlTrimmed.equals("update", ignoreCase = true) -> R.drawable.ic_update
+                urlTrimmed.equals("receive", ignoreCase = true) -> R.drawable.ic_receive
+                urlTrimmed.equals("send", ignoreCase = true) -> R.drawable.ic_cast
                 else -> R.drawable.ic_desktop  // browser card icon
             }
             val icon = getLargerIcon(context, iconDrawable, 1.5f) ?: ContextCompat.getDrawable(context, iconDrawable)

@@ -9,6 +9,14 @@ import org.junit.Test
 class VideoCatalogTest {
 
     @Test
+    fun utilityCardsIncludeReceive() {
+        assertTrue(VideoCatalog.isUtilityCard(Video("Receive", "receive", null)))
+        assertTrue(VideoCatalog.isUtilityCard(Video("Send", "send", null)))
+        assertTrue(VideoCatalog.isUtilityCard(Video("Settings", "Settings", null)))
+        assertFalse(VideoCatalog.isUtilityCard(Video("Live", "https://example.com/a.m3u8", null)))
+    }
+
+    @Test
     fun favCell_anyNonBlankIsFavorite() {
         assertTrue(VideoCatalog.isFavCell("true"))
         assertTrue(VideoCatalog.isFavCell("TRUE"))
@@ -79,7 +87,11 @@ class VideoCatalogTest {
         assertNull(VideoCatalog.pickFeatured(emptyList()))
         assertNull(
             VideoCatalog.pickFeatured(
-                listOf(Video("Settings", "Settings", null), Video("Browser", "browser", null))
+                listOf(
+                    Video("Settings", "Settings", null),
+                    Video("Browser", "browser", null),
+                    Video("Receive", "receive", null)
+                )
             )
         )
     }

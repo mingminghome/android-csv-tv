@@ -1,0 +1,131 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- TV: receivers on the left, what to send on the right. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#121212"
+    android:orientation="vertical">
+
+    <include
+        android:id="@+id/app_toolbar"
+        layout="@layout/include_app_toolbar" />
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="#22FFFFFF" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:orientation="horizontal"
+        android:paddingStart="@dimen/page_padding"
+        android:paddingTop="@dimen/page_gap"
+        android:paddingEnd="@dimen/page_padding"
+        android:paddingBottom="@dimen/page_padding">
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_marginEnd="@dimen/page_gap"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    style="@style/SetupSectionTitle"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="0dp"
+                    android:layout_marginBottom="0dp"
+                    android:layout_weight="1"
+                    android:text="@string/send_section_receivers" />
+
+                <Button
+                    android:id="@+id/send_scan"
+                    style="@style/AppToolbarButton"
+                    android:drawableStart="@drawable/ic_refresh_icon"
+                    android:text="@string/send_scan" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/send_status"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:layout_marginBottom="6dp"
+                android:text="@string/send_scanning"
+                android:textColor="#A0FFFFFF"
+                android:textSize="@dimen/subtitle_text" />
+
+            <ScrollView
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1"
+                android:fillViewport="true">
+
+                <LinearLayout
+                    android:id="@+id/send_device_list"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical" />
+            </ScrollView>
+        </LinearLayout>
+
+        <View
+            android:layout_width="1dp"
+            android:layout_height="match_parent"
+            android:background="#22FFFFFF" />
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_marginStart="@dimen/page_gap"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <LinearLayout
+                android:id="@+id/send_cast_types"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <TextView
+                    style="@style/SetupSectionTitle"
+                    android:layout_marginTop="0dp"
+                    android:text="@string/send_section_type" />
+
+                <Button
+                    android:id="@+id/send_pick"
+                    style="@style/SetupActionButton"
+                    android:drawableStart="@drawable/ic_image_icon"
+                    android:text="@string/send_pick" />
+
+                <Button
+                    android:id="@+id/send_cast_screen"
+                    style="@style/SetupActionButton"
+                    android:drawableStart="@drawable/ic_desktop"
+                    android:text="@string/send_cast_screen" />
+            </LinearLayout>
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1" />
+
+            <Button
+                android:id="@+id/send_stop"
+                style="@style/SetupActionButton"
+                android:layout_marginBottom="0dp"
+                android:drawableStart="@drawable/ic_close"
+                android:text="@string/send_stop"
+                android:visibility="gone" />
+        </LinearLayout>
+    </LinearLayout>
+</LinearLayout>

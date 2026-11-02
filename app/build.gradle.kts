@@ -9,25 +9,24 @@ plugins {
 import java.util.Properties
 import java.io.File
 
+val localProperties = Properties()
+val localPropertiesFile = rootProject.file("local.properties")
+if (localPropertiesFile.exists()) {
+    localPropertiesFile.inputStream().use { inputStream ->
+        localProperties.load(inputStream)
+    }
+}
+
 android {
     namespace = "com.mmhw.csvtv"
     compileSdk = 35
-
-    // Load configurations from local.properties
-    val localProperties = Properties()
-    val localPropertiesFile = project.rootProject.file("local.properties")
-    if (localPropertiesFile.exists()) {
-        localPropertiesFile.inputStream().use { inputStream ->
-            localProperties.load(inputStream)
-        }
-    }
 
     defaultConfig {
         applicationId = "com.mmhw.csvtv"
         minSdk = 21
         targetSdk = 35
-        versionCode = 16
-        versionName = "1.1.5"
+        versionCode = 17
+        versionName = "1.1.6"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -78,6 +77,36 @@ android {
     }
 }
 
+// castify lives in the sibling checkout named csvtv-receiver.
+val rustReceiverDir = rootProject.projectDir.parentFile.resolve("csvtv-receiver")
+val sdkDir = localProperties.getProperty("sdk.dir")
+    ?: System.getenv("ANDROID_HOME")
+    ?: System.getenv("ANDROID_SDK_ROOT")
+val ndkHome = System.getenv("ANDROID_NDK_HOME")
+    ?: System.getenv("ANDROID_NDK_ROOT")
+    ?: localProperties.getProperty("ndk.dir")
+    ?: sdkDir?.let { dir ->
+        File(dir, "ndk").listFiles()?.filter { it.isDirectory }?.maxByOrNull { it.name }?.absolutePath
+    }
+
+tasks.register<Exec>("buildRustReceiver") {
+    workingDir = rustReceiverDir
+    val outDir = layout.projectDirectory.dir("src/main/jniLibs").asFile
+    commandLine("bash", "scripts/build-android.sh", outDir.absolutePath)
+    environment("ANDROID_NDK_HOME", ndkHome ?: "")
+    environment("ANDROID_HOME", sdkDir ?: "")
+    environment("PATH", "${System.getProperty("user.home")}/.cargo/bin:${System.getenv("PATH") ?: ""}")
+    onlyIf {
+        !ndkHome.isNullOrBlank() &&
+            File(ndkHome).isDirectory &&
+            rustReceiverDir.resolve("scripts/build-android.sh").isFile
+    }
+}
+
+tasks.named("preBuild") {
+    dependsOn("buildRustReceiver")
+}
+
 dependencies {
     // Core Android dependencies
     implementation(libs.androidx.core.ktx)
@@ -93,6 +122,7 @@ dependencies {
     implementation(libs.androidx.leanback)
     implementation(libs.androidx.tvprovider)
     implementation("androidx.cardview:cardview:1.0.0")
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
 
     // Media3 for ExoPlayer (aligned with Jellyfin FFmpeg decoder build)
     val media3 = "1.5.0"
@@ -126,6 +156,7 @@ dependencies {
 
     // Test dependencies
     testImplementation(libs.junit)
+    testImplementation("org.json:json:20240303")
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
 }

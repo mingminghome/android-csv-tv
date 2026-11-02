@@ -8,14 +8,16 @@ import android.net.Uri
 import android.os.Bundle
 import android.util.Log
 import android.view.View
-import android.view.WindowManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.widget.TooltipCompat
 import androidx.fragment.app.FragmentActivity
+import com.mmhw.csvtv.receiver.CastCrypto
+import com.mmhw.csvtv.receiver.ReceiveConnect
 
 class SetupActivity : FragmentActivity() {
     private val SHEET_URL_PREFIX = "https://docs.google.com/spreadsheets/d/e/"
@@ -25,8 +27,10 @@ class SetupActivity : FragmentActivity() {
     private lateinit var sheetLinkInput: EditText
     private lateinit var defaultBrowserToggle: Button
     private lateinit var closeButton: Button
-    private lateinit var setupTitle: TextView
-    private lateinit var setupSubtitle: TextView
+    private lateinit var skipSetupButton: Button
+    private lateinit var skipSetupHint: TextView
+    private lateinit var bottomActions: View
+    private var skipHintToastShown = false
 
     /**
      * True when no CSV is configured yet (first launch / re-init).
@@ -59,13 +63,15 @@ class SetupActivity : FragmentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        AppChrome.prepare(this)
         setContentView(R.layout.activity_setup)
+        AppChrome.padSystemBars(this)
 
         sheetLinkInput = findViewById(R.id.sheet_link_input)
-        closeButton = findViewById(R.id.cancel_button)
-        setupTitle = findViewById(R.id.setup_title)
-        setupSubtitle = findViewById(R.id.setup_subtitle)
+        closeButton = findViewById(R.id.toolbar_back)
+        skipSetupButton = findViewById(R.id.skip_setup_button)
+        skipSetupHint = findViewById(R.id.skip_setup_hint)
+        bottomActions = findViewById(R.id.setup_bottom_actions)
         val pasteButton = findViewById<Button>(R.id.paste_button)
         val selectCsvButton = findViewById<Button>(R.id.select_csv_button)
         val historyButton = findViewById<Button>(R.id.history_button)
@@ -76,6 +82,9 @@ class SetupActivity : FragmentActivity() {
         val adblockListsButton = findViewById<Button>(R.id.adblock_lists_button)
         val applyButton = findViewById<Button>(R.id.apply_button)
         val aboutButton = findViewById<Button>(R.id.about_button)
+        val autoRotateToggle = findViewById<Button>(R.id.auto_rotate_toggle)
+        val confirmToggle = findViewById<Button>(R.id.confirm_connection_toggle)
+        val encryptionToggle = findViewById<Button>(R.id.encryption_toggle)
 
         applyButton.setOnClickListener {
             triggerApplySource()
@@ -86,15 +95,52 @@ class SetupActivity : FragmentActivity() {
             val current = Utils.getDefaultBrowserPage(this)
             val engine = if (current.contains("google", ignoreCase = true)) "google" else "duckduckgo"
             val display = Utils.getSearchEngineDisplayName(engine)
-            defaultBrowserToggle.text = "Default Search: $display"
+            defaultBrowserToggle.text = "Search: $display"
         }
         updateBrowserToggleText()
 
         fun updateDetailsToggleText() {
             val enabled = Utils.isShowSourceDetailsEnabled(this)
-            sourceDetailsToggle.text = "Show Source Details: ${if (enabled) "ON" else "OFF"}"
+            sourceDetailsToggle.text = "Source details: ${if (enabled) "ON" else "OFF"}"
         }
         updateDetailsToggleText()
+
+        fun updateAutoRotateText() {
+            val on = Utils.isAutoRotateEnabled(this)
+            autoRotateToggle.text = getString(
+                if (on) R.string.setup_auto_rotate_on else R.string.setup_auto_rotate_off
+            )
+        }
+        if (DeviceProfile.isHandheld(this)) {
+            autoRotateToggle.visibility = View.VISIBLE
+            updateAutoRotateText()
+            autoRotateToggle.setOnClickListener {
+                val next = !Utils.isAutoRotateEnabled(this)
+                Utils.setAutoRotateEnabled(this, next)
+                updateAutoRotateText()
+                OrientationPolicy.apply(this)
+                showToast("Auto-rotate ${if (next) "ON" else "OFF"}")
+            }
+        } else {
+            autoRotateToggle.visibility = View.GONE
+        }
+
+        fun updateConfirmText() {
+            confirmToggle.text = ReceiveConnect.confirmLabel(this)
+        }
+        fun updateEncryptionText() {
+            encryptionToggle.text = CastCrypto.buttonLabel(this)
+        }
+        updateConfirmText()
+        updateEncryptionText()
+        confirmToggle.setOnClickListener {
+            ReceiveConnect.setConfirmEnabled(this, !ReceiveConnect.confirmEnabled(this))
+            updateConfirmText()
+            showToast(ReceiveConnect.confirmLabel(this))
+        }
+        encryptionToggle.setOnClickListener {
+            CastCrypto.showDialog(this) { updateEncryptionText() }
+        }
 
         val sharedPrefs = getSharedPreferences("AppPrefs", MODE_PRIVATE)
         val currentSheetLink = sharedPrefs.getString("sheet_link", null)
@@ -109,7 +155,6 @@ class SetupActivity : FragmentActivity() {
         currentSheetLink?.let {
             sheetLinkInput.setText(it)
         }
-        closeButton.visibility = View.VISIBLE
         applyInitOrSettingsChrome()
 
         // Auto-apply on keyboard "Done" or "Enter" actions (validates)
@@ -179,12 +224,20 @@ class SetupActivity : FragmentActivity() {
         }
 
         resetAllButton.setOnClickListener {
-            // Reset all settings to defaults
             Utils.setShowSourceDetailsEnabled(this, false)
             Utils.setDefaultBrowserPage(this, "https://duckduckgo.com/")
+            Utils.setAutoRotateEnabled(this, true)
+            ReceiveConnect.setConfirmEnabled(this, false)
+            CastCrypto.clear(this)
             AdBlocker.resetSourcesToDefault(this)
             updateDetailsToggleText()
             updateBrowserToggleText()
+            updateConfirmText()
+            updateEncryptionText()
+            if (DeviceProfile.isHandheld(this)) {
+                updateAutoRotateText()
+                OrientationPolicy.apply(this)
+            }
             showToast("All settings reset to default")
         }
 
@@ -215,6 +268,17 @@ class SetupActivity : FragmentActivity() {
             showAboutDialog()
         }
 
+        TooltipCompat.setTooltipText(skipSetupButton, getString(R.string.setup_skip_hint))
+        skipSetupButton.setOnClickListener {
+            skipSetupWithoutCsv()
+        }
+        skipSetupButton.setOnFocusChangeListener { _, hasFocus ->
+            if (hasFocus && !skipHintToastShown) {
+                skipHintToastShown = true
+                showToast(getString(R.string.setup_skip_hint))
+            }
+        }
+
         // Close / Exit / Back: same path (save/validate, return to main, or confirm quit if no CSV).
         closeButton.setOnClickListener {
             attemptAutoSaveAndClose()
@@ -230,13 +294,29 @@ class SetupActivity : FragmentActivity() {
     /** Title, subtitle, and primary exit label for init vs settings. */
     private fun applyInitOrSettingsChrome() {
         if (isInitMode) {
-            setupTitle.text = "Setup"
-            setupSubtitle.text = "Add your CSV source to get started"
-            closeButton.text = "Exit app"
+            val exitLabel = getString(
+                if (AppToolbar.isNarrow(this)) R.string.setup_exit_short else R.string.setup_exit
+            )
+            AppToolbar.bind(
+                activity = this,
+                title = getString(R.string.setup_screen_title),
+                subtitle = getString(R.string.setup_screen_subtitle),
+                backText = exitLabel,
+                onBack = { attemptAutoSaveAndClose() }
+            )
+            bottomActions.visibility = View.VISIBLE
+            skipSetupButton.visibility = View.VISIBLE
+            skipSetupHint.visibility = View.VISIBLE
         } else {
-            setupTitle.text = "Settings"
-            setupSubtitle.text = "Change your CSV source and preferences"
-            closeButton.text = "Back to main"
+            AppToolbar.bind(
+                activity = this,
+                title = getString(R.string.setup_screen_title_settings),
+                subtitle = getString(R.string.setup_screen_subtitle_settings),
+                onBack = { attemptAutoSaveAndClose() }
+            )
+            bottomActions.visibility = View.GONE
+            skipSetupButton.visibility = View.GONE
+            skipSetupHint.visibility = View.GONE
         }
     }
 
@@ -609,8 +689,12 @@ class SetupActivity : FragmentActivity() {
 
         if (input.isBlank()) {
             if (currentSaved.isNullOrBlank()) {
-                // Init / no source: require double Back or Exit to leave the app.
-                requestQuitWithNoCsv()
+                if (Utils.isSetupSkipped(this)) {
+                    navigateToMainActivity()
+                } else {
+                    // Init / no source: require double Back or Exit to leave the app.
+                    requestQuitWithNoCsv()
+                }
             } else {
                 navigateToMainActivity()
             }
@@ -648,9 +732,14 @@ class SetupActivity : FragmentActivity() {
             return
         }
         lastExitAttemptMs = now
-        showToast("Add a CSV source, or press Back / Exit again to leave")
-        // Keep focus on exit control for a quick second press on TV.
-        closeButton.requestFocus()
+        showToast("Add a CSV, skip setup to use Browser and Receive, or press Back / Exit again to leave")
+        skipSetupButton.requestFocus()
+    }
+
+    private fun skipSetupWithoutCsv() {
+        Utils.setSetupSkipped(this, true)
+        showToast(getString(R.string.setup_skip_hint))
+        navigateToMainActivity()
     }
 
     private fun determineFinalSheetLinks(input: String): List<String> {
@@ -771,6 +860,7 @@ class SetupActivity : FragmentActivity() {
         getSharedPreferences("AppPrefs", MODE_PRIVATE)
             .edit()
             .putString("sheet_link", link)
+            .putBoolean("setup_skipped", false)
             .apply()
     }
 

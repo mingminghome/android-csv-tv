@@ -38,6 +38,10 @@ import androidx.core.view.WindowInsetsCompat
 
 class WebViewFragment : Fragment() {
 
+    fun interface Closer {
+        fun onWebViewClosed()
+    }
+
     private lateinit var webView: WebView
     private lateinit var pointer: ImageView
     private lateinit var container: ViewGroup
@@ -134,9 +138,9 @@ class WebViewFragment : Fragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
 
-        val url = arguments?.getString("url") ?: return
-        isBrowserCard = arguments?.getBoolean("is_browser_card", false) ?: false
-        skipNativeHandoff = arguments?.getBoolean("skip_native_handoff", false) ?: false
+        val url = arguments?.getString(ARG_URL) ?: return
+        isBrowserCard = arguments?.getBoolean(ARG_BROWSER_CARD, false) ?: false
+        skipNativeHandoff = arguments?.getBoolean(ARG_SKIP_NATIVE_HANDOFF, false) ?: false
         if (skipNativeHandoff) {
             // This exact URL is not a media container (native player already failed).
             // Still allow handoff if the page later fetches a real playlist.
@@ -149,7 +153,7 @@ class WebViewFragment : Fragment() {
 
         ViewCompat.setOnApplyWindowInsetsListener(view) { v, insets ->
             val imeVisible = insets.isVisible(WindowInsetsCompat.Type.ime())
-            if (!imeVisible && webInputKeyboardShown) {
+            if (!imeVisible && webInputKeyboardShown && usesTvPointer()) {
                 webInputKeyboardShown = false
                 webView.isFocusable = false
                 webView.isFocusableInTouchMode = false
@@ -185,9 +189,10 @@ class WebViewFragment : Fragment() {
             isFocusable = false
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         }
-        activityContent?.addView(pointerContainer)
-
         setupPointer(pointerContainer)
+        if (usesTvPointer()) {
+            activityContent?.addView(pointerContainer)
+        }
 
         webToolbar = view.findViewById(R.id.web_toolbar)
         // Use SOFTWARE for toolbar overlay to avoid EGL sync conflicts with WebView
@@ -247,10 +252,13 @@ class WebViewFragment : Fragment() {
             // to open the input dialog.
         }
 
-        // Ensure pointer/cursor is active when loading the browser.
-        // Now safe because pointer/pointerContainer are initialized above.
-        if (!isInFullscreen) {
-            setCursorVisibility(true)
+        // TV uses the overlay pointer. Phones tap the page and type with the system keyboard.
+        if (usesTvPointer()) {
+            if (!isInFullscreen) {
+                setCursorVisibility(true)
+            }
+        } else {
+            setCursorVisibility(false)
         }
 
         btnWebBack.setOnClickListener {
@@ -292,10 +300,15 @@ class WebViewFragment : Fragment() {
 
         setupWebView(url)
 
-        container.isFocusable = true
-        container.isFocusableInTouchMode = true
-        if (!webInputKeyboardShown) {
-            container.requestFocus()
+        if (usesTvPointer()) {
+            container.isFocusable = true
+            container.isFocusableInTouchMode = true
+            if (!webInputKeyboardShown) {
+                container.requestFocus()
+            }
+        } else {
+            container.isFocusable = false
+            container.isFocusableInTouchMode = false
         }
 
         updateNavigationButtons()
@@ -534,6 +547,7 @@ class WebViewFragment : Fragment() {
     }
 
     @SuppressLint("SetJavaScriptEnabled")
+    @Suppress("DEPRECATION")
     private fun setupWebView(url: String) {
         // Load asset + cached remote blocklists; may auto-refresh stale remote sources
         AdBlocker.ensureLoaded(requireContext().applicationContext)
@@ -553,6 +567,8 @@ class WebViewFragment : Fragment() {
             // https catalog / browser URLs only; file and content schemes stay closed to page JS.
             allowFileAccess = false
             allowContentAccess = false
+            allowFileAccessFromFileURLs = false
+            allowUniversalAccessFromFileURLs = false
             setSupportMultipleWindows(true)
             javaScriptCanOpenWindowsAutomatically = true
             // Disable offscreen pre-raster to reduce EGL fence sync issues on some devices/emulators
@@ -822,7 +838,7 @@ class WebViewFragment : Fragment() {
                 container.visibility = View.VISIBLE
 
                 fullscreenContainer.setOnKeyListener(null)
-                if (!webInputKeyboardShown) {
+                if (usesTvPointer() && !webInputKeyboardShown) {
                     container.requestFocus()
                 }
 
@@ -847,11 +863,35 @@ class WebViewFragment : Fragment() {
         }
 
         webView.loadUrl(url)
-        webView.isFocusable = false
-        webView.isFocusableInTouchMode = false
-        webView.setOnKeyListener { _, keyCode, event ->
-            handleKeyEvent(keyCode, event)
+        if (usesTvPointer()) {
+            webView.isFocusable = false
+            webView.isFocusableInTouchMode = false
+            webView.setOnKeyListener { _, keyCode, event ->
+                handleKeyEvent(keyCode, event)
+            }
+        } else {
+            webView.isFocusable = true
+            webView.isFocusableInTouchMode = true
+            applyPhoneWebChrome()
         }
+    }
+
+    /** Phone: D-pad pointer stays off so taps reach the page and the IME can show. */
+    private fun usesTvPointer(): Boolean {
+        val ctx = context ?: return false
+        return DeviceProfile.isTelevision(ctx)
+    }
+
+    private fun applyPhoneWebChrome() {
+        setToolbarVisibility(true)
+        applyPhoneWebViewInset(true)
+    }
+
+    private fun applyPhoneWebViewInset(toolbarVisible: Boolean) {
+        if (usesTvPointer() || !::webView.isInitialized) return
+        val lp = webView.layoutParams as? android.widget.FrameLayout.LayoutParams ?: return
+        lp.topMargin = if (toolbarVisible) toolbarHeightPx().toInt() else 0
+        webView.layoutParams = lp
     }
 
     private fun toolbarHeightPx(): Float {
@@ -907,6 +947,7 @@ class WebViewFragment : Fragment() {
     private fun setToolbarVisibility(show: Boolean) {
         if (show == isToolbarShowing) return
         isToolbarShowing = show
+        applyPhoneWebViewInset(show)
 
         webToolbar.animate().cancel()
         val toolbarHeight = toolbarHeightPx()
@@ -1707,12 +1748,17 @@ class WebViewFragment : Fragment() {
         }
     }
 
-    /** Leave WebView and return to main browse. Does not quit the app process. */
+    /** Leave WebView and return to the host (Receive idle, or main browse). */
     private fun exitToMain() {
         if (!isAdded) return
         exitFullscreenIfNeeded()
         stopHtmlVideoStallMonitor()
         pauseHtmlMedia()
+        val closer = (parentFragment as? Closer) ?: (activity as? Closer)
+        if (closer != null) {
+            closer.onWebViewClosed()
+            return
+        }
         try {
             if (!parentFragmentManager.isStateSaved) {
                 parentFragmentManager.popBackStack()
@@ -2094,6 +2140,12 @@ class WebViewFragment : Fragment() {
             // Too early (e.g. during onViewCreated before setupPointer). Skip safely.
             return
         }
+        if (!usesTvPointer()) {
+            isCursorShowing = false
+            pointer.visibility = View.INVISIBLE
+            pointerHideHandler.removeCallbacksAndMessages(null)
+            return
+        }
         if (show) {
             isCursorShowing = true
             val isPointerInToolbar = isPointerOverToolbar()
@@ -2271,7 +2323,7 @@ class WebViewFragment : Fragment() {
         if (::webView.isInitialized && !isWebViewDestroyed) {
             webView.onResume()
         }
-        if (!webInputKeyboardShown && ::container.isInitialized) {
+        if (usesTvPointer() && !webInputKeyboardShown && ::container.isInitialized) {
             container.requestFocus()
         }
         updateContentDimensions()
@@ -2320,6 +2372,29 @@ class WebViewFragment : Fragment() {
     }
 
     companion object {
+        const val ARG_URL = "url"
+        const val ARG_BROWSER_CARD = "is_browser_card"
+        const val ARG_SKIP_NATIVE_HANDOFF = "skip_native_handoff"
+
+        fun create(
+            url: String,
+            isBrowserCard: Boolean = false,
+            skipNativeHandoff: Boolean = false
+        ): WebViewFragment {
+            return WebViewFragment().apply {
+                arguments = Bundle().apply {
+                    putString(ARG_URL, url)
+                    putBoolean(ARG_BROWSER_CARD, isBrowserCard)
+                    putBoolean(ARG_SKIP_NATIVE_HANDOFF, skipNativeHandoff)
+                }
+            }
+        }
+
+        /** Full in-app browser (pointer, toolbar, adblock) for a received or opened page. */
+        fun page(url: String): WebViewFragment {
+            return create(url, isBrowserCard = true, skipNativeHandoff = true)
+        }
+
         /**
          * Desktop layout without claiming to be a different OS or browser.
          * A mismatched UA makes bot-check scripts reject the session and retry.

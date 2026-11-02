@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:background="@drawable/overflow_panel_bg"
+    android:minWidth="240dp"
+    android:orientation="vertical"
+    android:padding="4dp">
+
+    <Button
+        android:id="@+id/overflow_auto_connect"
+        style="@style/CastOverflowButton"
+        android:layout_width="match_parent"
+        android:drawableStart="@drawable/ic_check_circle"
+        android:text="@string/receive_auto_connect_on" />
+
+    <Button
+        android:id="@+id/overflow_encryption"
+        style="@style/CastOverflowButton"
+        android:layout_width="match_parent"
+        android:drawableStart="@drawable/ic_settings_icon"
+        android:text="@string/setup_encryption_off" />
+</LinearLayout>

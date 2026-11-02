@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <dimen name="toolbar_height">48dp</dimen>
+    <dimen name="toolbar_button_min_width">56dp</dimen>
+    <dimen name="page_padding">16dp</dimen>
+    <dimen name="page_gap">12dp</dimen>
+    <dimen name="idle_icon">56dp</dimen>
+    <dimen name="title_text">20sp</dimen>
+    <dimen name="subtitle_text">13sp</dimen>
+    <dimen name="section_text">14sp</dimen>
+    <dimen name="action_height">48dp</dimen>
+    <dimen name="idle_action_max">360dp</dimen>
+</resources>

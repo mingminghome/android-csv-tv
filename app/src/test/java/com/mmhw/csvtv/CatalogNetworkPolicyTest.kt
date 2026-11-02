@@ -11,6 +11,8 @@ class CatalogNetworkPolicyTest {
         assertTrue(CatalogNetworkPolicy.shouldSkipPrecheck(Video("Settings", "settings", null)))
         assertTrue(CatalogNetworkPolicy.shouldSkipPrecheck(Video("Browser", "browser", null)))
         assertTrue(CatalogNetworkPolicy.shouldSkipPrecheck(Video("Refresh", "Refresh", null)))
+        assertTrue(CatalogNetworkPolicy.shouldSkipPrecheck(Video("Receive", "receive", null)))
+        assertTrue(CatalogNetworkPolicy.shouldSkipPrecheck(Video("Send", "send", null)))
     }
 
     @Test

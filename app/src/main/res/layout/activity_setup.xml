@@ -1,311 +1,198 @@
 <?xml version="1.0" encoding="utf-8"?>
-<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+<!-- Narrow (phone portrait): single column, actions pinned to the bottom. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:fillViewport="true"
-    android:background="#121212">
+    android:background="#121212"
+    android:orientation="vertical"
+    android:paddingBottom="12dp">
 
-    <LinearLayout
+    <include
+        android:id="@+id/app_toolbar"
+        layout="@layout/include_app_toolbar" />
+
+    <View
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:gravity="top"
-        android:orientation="vertical"
-        android:padding="24dp">
+        android:layout_height="1dp"
+        android:background="#22FFFFFF" />
 
-        <TextView
-            android:id="@+id/setup_title"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginBottom="4dp"
-            android:text="Settings"
-            android:textColor="@android:color/white"
-            android:textSize="28sp"
-            android:textStyle="bold" />
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:clipToPadding="false"
+        android:fillViewport="true"
+        android:paddingHorizontal="@dimen/page_padding"
+        android:paddingTop="@dimen/page_gap"
+        android:paddingBottom="8dp">
 
-        <TextView
-            android:id="@+id/setup_subtitle"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginBottom="20dp"
-            android:text="Change your CSV source and preferences"
-            android:textColor="#A0FFFFFF"
-            android:textSize="15sp" />
-
-        <!-- Two column layout -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:gravity="top"
-            android:orientation="horizontal"
-            android:paddingHorizontal="8dp">
+            android:orientation="vertical">
 
-            <!-- Left: CSV Source + Input Options -->
-            <LinearLayout
-                android:layout_width="0dp"
+            <TextView
+                style="@style/SetupSectionTitle"
+                android:layout_marginTop="0dp"
+                android:text="CSV Source" />
+
+            <EditText
+                android:id="@+id/sheet_link_input"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginBottom="6dp"
+                android:background="@drawable/edit_text_bg"
+                android:hint="CSV URL, Google Sheet, or shortlink"
+                android:imeOptions="actionDone"
+                android:inputType="textUri"
+                android:maxLines="1"
+                android:paddingHorizontal="16dp"
+                android:textColor="@android:color/white"
+                android:textColorHint="#66FFFFFF"
+                android:textSize="15sp" />
+
+            <Button
+                android:id="@+id/apply_button"
+                style="@style/SetupActionButton"
+                android:gravity="center"
+                android:text="Apply" />
+
+            <TextView
+                android:id="@+id/textView"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_weight="0.95"
-                android:orientation="vertical"
-                android:paddingEnd="20dp">
+                android:layout_marginBottom="4dp"
+                android:text="Full URLs, published Google Sheet IDs, or shortlink IDs."
+                android:textColor="#A0FFFFFF"
+                android:textSize="13sp" />
 
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginBottom="6dp"
-                    android:gravity="start"
-                    android:text="CSV Source"
-                    android:textColor="#BDBDBD"
-                    android:textSize="16sp"
-                    android:textStyle="bold" />
+            <TextView
+                style="@style/SetupSectionTitle"
+                android:text="Input" />
 
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:layout_marginBottom="6dp"
-                    android:gravity="center_vertical">
+            <Button
+                android:id="@+id/paste_button"
+                style="@style/SetupActionButton"
+                android:drawableStart="@drawable/ic_paste"
+                android:text="Paste clipboard" />
 
-                    <EditText
-                        android:id="@+id/sheet_link_input"
-                        android:layout_width="0dp"
-                        android:layout_height="48dp"
-                        android:layout_weight="1"
-                        android:layout_marginEnd="8dp"
-                        android:background="@drawable/edit_text_bg"
-                        android:hint="Enter CSV URL / Google sheet, Bitly, TinyURL ID"
-                        android:inputType="textUri"
-                        android:paddingHorizontal="16dp"
-                        android:textColor="@android:color/white"
-                        android:textColorHint="#66FFFFFF"
-                        android:textSize="15sp" />
+            <Button
+                android:id="@+id/select_csv_button"
+                style="@style/SetupActionButton"
+                android:drawableStart="@drawable/ic_folder"
+                android:text="Select CSV file" />
 
-                    <Button
-                        android:id="@+id/apply_button"
-                        android:layout_width="wrap_content"
-                        android:layout_height="48dp"
-                        android:background="@drawable/button_focus_bg"
-                        android:gravity="center"
-                        android:paddingHorizontal="20dp"
-                        android:text="Apply"
-                        android:textAllCaps="false"
-                        android:textColor="@color/button_text_color" />
-                </LinearLayout>
+            <Button
+                android:id="@+id/history_button"
+                style="@style/SetupActionButton"
+                android:drawableStart="@drawable/ic_history"
+                android:text="Recent sources" />
 
-                <TextView
-                    android:id="@+id/textView"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginBottom="16dp"
-                    android:text="Supports full URLs (incl. shortlinks), published Google Sheet IDs, or shortlink IDs."
-                    android:textColor="#A0FFFFFF"
-                    android:textSize="13sp" />
+            <TextView
+                style="@style/SetupSectionTitle"
+                android:text="Settings" />
 
-                <!-- Input Options -->
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp"
-                    android:layout_marginBottom="6dp"
-                    android:gravity="start"
-                    android:text="Input Options"
-                    android:textColor="#BDBDBD"
-                    android:textSize="15sp"
-                    android:textStyle="bold" />
+            <Button
+                android:id="@+id/auto_rotate_toggle"
+                style="@style/SetupActionButton"
+                android:drawableStart="@drawable/ic_screen_rotation"
+                android:text="@string/setup_auto_rotate_on"
+                android:visibility="gone" />
 
-                <Button
-                    android:id="@+id/paste_button"
-                    android:layout_width="match_parent"
-                    android:layout_height="48dp"
-                    android:layout_marginBottom="6dp"
-                    android:background="@drawable/button_focus_bg"
-                    android:drawableStart="@drawable/ic_paste"
-                    android:drawablePadding="10dp"
-                    android:gravity="center_vertical|start"
-                    android:paddingStart="14dp"
-                    android:text="Paste Clipboard"
-                    android:textAllCaps="false"
-                    android:textColor="@color/button_text_color" />
+            <Button
+                android:id="@+id/source_details_toggle"
+                style="@style/SetupActionButton"
+                android:drawableStart="@drawable/ic_settings_icon"
+                android:text="Source details: OFF" />
 
-                <Button
-                    android:id="@+id/select_csv_button"
-                    android:layout_width="match_parent"
-                    android:layout_height="48dp"
-                    android:layout_marginBottom="6dp"
-                    android:background="@drawable/button_focus_bg"
-                    android:drawableStart="@drawable/ic_folder"
-                    android:drawablePadding="10dp"
-                    android:gravity="center_vertical|start"
-                    android:paddingStart="14dp"
-                    android:text="Select CSV File"
-                    android:textAllCaps="false"
-                    android:textColor="@color/button_text_color" />
+            <TextView
+                style="@style/SetupSectionTitle"
+                android:text="@string/setup_section_cast" />
 
-                <Button
-                    android:id="@+id/history_button"
-                    android:layout_width="match_parent"
-                    android:layout_height="48dp"
-                    android:layout_marginBottom="8dp"
-                    android:background="@drawable/button_focus_bg"
-                    android:drawableStart="@drawable/ic_history"
-                    android:drawablePadding="10dp"
-                    android:gravity="center_vertical|start"
-                    android:paddingStart="14dp"
-                    android:text="Recent Sources"
-                    android:textAllCaps="false"
-                    android:textColor="@color/button_text_color" />
+            <Button
+                android:id="@+id/confirm_connection_toggle"
+                style="@style/SetupActionButton"
+                android:drawableStart="@drawable/ic_receive"
+                android:text="@string/setup_confirm_off" />
 
-            </LinearLayout>
+            <Button
+                android:id="@+id/encryption_toggle"
+                style="@style/SetupActionButton"
+                android:drawableStart="@drawable/ic_settings_icon"
+                android:text="@string/setup_encryption_off" />
 
-            <!-- Right: Settings + About -->
-            <LinearLayout
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1.05"
-                android:orientation="vertical"
-                android:paddingStart="20dp">
+            <TextView
+                style="@style/SetupSectionTitle"
+                android:text="@string/setup_section_web" />
 
-                <!-- Settings -->
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginBottom="6dp"
-                    android:gravity="start"
-                    android:text="Settings"
-                    android:textColor="#BDBDBD"
-                    android:textSize="15sp"
-                    android:textStyle="bold" />
+            <Button
+                android:id="@+id/default_browser_toggle"
+                style="@style/SetupActionButton"
+                android:drawableStart="@drawable/ic_image_icon"
+                android:text="Search: DuckDuckGo" />
 
-                <Button
-                    android:id="@+id/source_details_toggle"
-                    android:layout_width="match_parent"
-                    android:layout_height="48dp"
-                    android:layout_marginBottom="6dp"
-                    android:background="@drawable/button_focus_bg"
-                    android:drawableStart="@drawable/ic_settings_icon"
-                    android:drawablePadding="10dp"
-                    android:gravity="center_vertical|start"
-                    android:paddingStart="14dp"
-                    android:text="Show Source Details: OFF"
-                    android:textAllCaps="false"
-                    android:textColor="@color/button_text_color" />
+            <Button
+                android:id="@+id/adblock_lists_button"
+                style="@style/SetupActionButton"
+                android:drawableStart="@drawable/ic_check_circle"
+                android:text="Adblock" />
 
-                <Button
-                    android:id="@+id/default_browser_toggle"
-                    android:layout_width="match_parent"
-                    android:layout_height="48dp"
-                    android:layout_marginBottom="6dp"
-                    android:background="@drawable/button_focus_bg"
-                    android:drawableStart="@drawable/ic_image_icon"
-                    android:drawablePadding="10dp"
-                    android:gravity="center_vertical|start"
-                    android:paddingStart="14dp"
-                    android:text="Default Search: DuckDuckGo"
-                    android:textAllCaps="false"
-                    android:textColor="@color/button_text_color" />
+            <TextView
+                style="@style/SetupSectionTitle"
+                android:text="Utilities" />
 
-                <Button
-                    android:id="@+id/adblock_lists_button"
-                    android:layout_width="match_parent"
-                    android:layout_height="48dp"
-                    android:layout_marginBottom="4dp"
-                    android:background="@drawable/button_focus_bg"
-                    android:drawableStart="@drawable/ic_check_circle"
-                    android:drawablePadding="10dp"
-                    android:gravity="center_vertical|start"
-                    android:paddingStart="14dp"
-                    android:text="Adblock"
-                    android:textAllCaps="false"
-                    android:textColor="@color/button_text_color" />
+            <Button
+                android:id="@+id/purge_freq_button"
+                style="@style/SetupActionButton"
+                android:drawableStart="@drawable/ic_reset"
+                android:text="Reset watch history" />
 
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp"
-                    android:layout_marginBottom="6dp"
-                    android:gravity="start"
-                    android:text="Utilities"
-                    android:textColor="#BDBDBD"
-                    android:textSize="15sp"
-                    android:textStyle="bold" />
+            <Button
+                android:id="@+id/reset_all_button"
+                style="@style/SetupActionButton"
+                android:drawableStart="@drawable/ic_reset"
+                android:text="Reset all to default" />
 
-                <Button
-                    android:id="@+id/purge_freq_button"
-                    android:layout_width="match_parent"
-                    android:layout_height="48dp"
-                    android:layout_marginBottom="6dp"
-                    android:background="@drawable/button_focus_bg"
-                    android:drawableStart="@drawable/ic_reset"
-                    android:drawablePadding="10dp"
-                    android:gravity="center_vertical|start"
-                    android:paddingStart="14dp"
-                    android:text="Reset Watch History"
-                    android:textAllCaps="false"
-                    android:textColor="@color/button_text_color" />
+            <TextView
+                style="@style/SetupSectionTitle"
+                android:text="About" />
 
-                <Button
-                    android:id="@+id/reset_all_button"
-                    android:layout_width="match_parent"
-                    android:layout_height="48dp"
-                    android:layout_marginBottom="6dp"
-                    android:background="@drawable/button_focus_bg"
-                    android:drawableStart="@drawable/ic_reset"
-                    android:drawablePadding="10dp"
-                    android:gravity="center_vertical|start"
-                    android:paddingStart="14dp"
-                    android:text="Reset All to Default"
-                    android:textAllCaps="false"
-                    android:textColor="@color/button_text_color" />
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="18dp"
-                    android:layout_marginTop="4dp"
-                    android:layout_marginBottom="6dp"
-                    android:gravity="start"
-                    android:text="About"
-                    android:textColor="#BDBDBD"
-                    android:textSize="15sp"
-                    android:textStyle="bold" />
-
-                <Button
-                    android:id="@+id/about_button"
-                    android:layout_width="match_parent"
-                    android:layout_height="48dp"
-                    android:background="@drawable/button_focus_bg"
-                    android:drawableStart="@drawable/ic_restore"
-                    android:drawablePadding="10dp"
-                    android:gravity="center_vertical|start"
-                    android:paddingStart="14dp"
-                    android:text="About"
-                    android:textAllCaps="false"
-                    android:textColor="@color/button_text_color" />
-
-            </LinearLayout>
+            <Button
+                android:id="@+id/about_button"
+                style="@style/SetupActionButton"
+                android:drawableStart="@drawable/ic_restore"
+                android:text="About" />
 
         </LinearLayout>
+    </ScrollView>
 
-        <!-- Bottom action bar -->
-        <View
-            android:layout_width="match_parent"
-            android:layout_height="1dp"
-            android:layout_marginTop="16dp"
-            android:layout_marginBottom="12dp"
-            android:layout_marginHorizontal="32dp"
-            android:background="#22FFFFFF" />
+    <LinearLayout
+        android:id="@+id/setup_bottom_actions"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginHorizontal="@dimen/page_padding"
+        android:layout_marginTop="8dp"
+        android:gravity="center_vertical"
+        android:orientation="vertical"
+        android:visibility="gone">
 
         <Button
-            android:id="@+id/cancel_button"
-            android:layout_width="match_parent"
-            android:layout_height="52dp"
-            android:layout_marginHorizontal="32dp"
-            android:layout_marginBottom="8dp"
-            android:background="@drawable/button_focus_bg"
-            android:drawableStart="@drawable/ic_close"
-            android:drawablePadding="12dp"
-            android:gravity="center_vertical|start"
-            android:paddingStart="14dp"
-            android:text="Close"
-            android:textAllCaps="false"
-            android:textColor="@color/button_text_color" />
+            android:id="@+id/skip_setup_button"
+            style="@style/SetupActionButton"
+            android:layout_marginBottom="0dp"
+            android:contentDescription="@string/setup_skip_hint"
+            android:drawableStart="@drawable/ic_desktop"
+            android:text="@string/setup_skip"
+            android:tooltipText="@string/setup_skip_hint" />
 
+        <TextView
+            android:id="@+id/skip_setup_hint"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="@string/setup_skip_hint"
+            android:textColor="#A0FFFFFF"
+            android:textSize="@dimen/subtitle_text" />
     </LinearLayout>
-</ScrollView>
+
+</LinearLayout>

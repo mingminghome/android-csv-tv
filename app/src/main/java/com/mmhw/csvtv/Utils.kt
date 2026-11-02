@@ -732,6 +732,27 @@ object Utils {
         return false
     }
 
+    fun isSetupSkipped(context: Context): Boolean {
+        val prefs = context.getSharedPreferences("AppPrefs", Context.MODE_PRIVATE)
+        return prefs.getBoolean("setup_skipped", false)
+    }
+
+    fun setSetupSkipped(context: Context, skipped: Boolean) {
+        val prefs = context.getSharedPreferences("AppPrefs", Context.MODE_PRIVATE)
+        prefs.edit().putBoolean("setup_skipped", skipped).apply()
+    }
+
+    /** Phone/tablet only. Default on so a detected phone follows the sensor. */
+    fun isAutoRotateEnabled(context: Context): Boolean {
+        val prefs = context.getSharedPreferences("AppPrefs", Context.MODE_PRIVATE)
+        return prefs.getBoolean("auto_rotate", true)
+    }
+
+    fun setAutoRotateEnabled(context: Context, enabled: Boolean) {
+        val prefs = context.getSharedPreferences("AppPrefs", Context.MODE_PRIVATE)
+        prefs.edit().putBoolean("auto_rotate", enabled).apply()
+    }
+
     fun isShowSourceDetailsEnabled(context: Context): Boolean {
         val prefs = context.getSharedPreferences("AppPrefs", Context.MODE_PRIVATE)
         return prefs.getBoolean("show_source_details", false) // Disabled by default

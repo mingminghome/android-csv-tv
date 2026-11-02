@@ -2,5 +2,6 @@
 <selector xmlns:android="http://schemas.android.com/apk/res/android">
     <item android:state_focused="true" android:color="#000000"/> <!-- Black text when focused -->
     <item android:state_pressed="true" android:color="#000000"/>
+    <item android:state_selected="true" android:color="#000000"/>
     <item android:color="#FFFFFF"/> <!-- White text otherwise -->
 </selector>

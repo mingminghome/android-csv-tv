@@ -12,11 +12,13 @@
 ### 📺 Leanback & Custom UI
 - **Android TV Home Row**: Publishes posters to the Android TV / Google TV home screen (API 26+). A CSV `fav` mark chooses the lead card; otherwise the first fetched row is used. Empty or failed catalogs clear those home-screen cards.
 - **Leanback Grid Layout**: TV-optimized interface utilizing Android's Leanback framework to display channel groups and card lists.
-- **Card Icon Polish**: No-thumbnail cards, special cards (Settings, Refresh, Browser, Update), and broken-image cards now use consistent 1.5× scaled icons with CENTER_INSIDE scaling for proper alignment.
+- **Card Icon Polish**: No-thumbnail cards, special cards (Settings, Refresh, Browser, Receive, Send, Update), and broken-image cards now use consistent 1.5× scaled icons with CENTER_INSIDE scaling for proper alignment.
+- **Receive**: The **Cast** row **Receive** card waits on this Wi-Fi for a photo, video, audio, collection, web page, or screen from **Send**. Each receiver shows a short **ID** so Send can tell several devices apart. Photos show full screen, video, audio, and screen play in the player, and web pages open in the in-app Browser (D-pad pointer, toolbar, Back). A collection is a slideshow: D-pad Left/Right (or swipe) moves between items, Center pauses, Back returns to the idle Receive screen.
+- **Send**: The **Cast** row **Send** card chooses a receiver on this Wi-Fi, then a photo, video, audio, collection, web page, or this screen. Android **Share → TV, Send** skips the type step and sends the shared item. Several items shared at once play as a looping slideshow on Receive. A notification with **Stop** stays up while sending. Screen cast mirrors this device’s display and, on Android 10+, the sound playing on the device.
 - **Card Open Feedback**: Selecting a title dims that card and shows a spinner until the player or browser opens. A second click on the same URL is ignored while that open is in flight.
 - **Adaptive Scrolling Badge Ticker**: Card metadata badges (Resolution, Format, Latency, Audio-Only, Sound Channels, Domain Source) are center-aligned if they fit, or smoothly auto-scrolled via a self-reversing ticker animation when focused.
 - **Domain Source & Audio Badges**: Shows the host domain name of the stream source and audio configuration (Stereo, 5.1, Mono), enriched with clean vector icons.
-- **Guided CSV Setup Screen**: Dedicated TV setup interface (2-column layout) to input remote CSV spreadsheet URLs or Google Sheets IDs, featuring real-time verification and persistent storage. Separate titled "About" section and 2-column Utilities. Close button properly aligned with content margins.
+- **Guided CSV Setup Screen**: Phone **Auto-rotate ON** (default) forces landscape and the wide two-column Settings page. **Auto-rotate OFF** locks portrait with a single-column page. Settings, Send, and Receive share one top toolbar (Back + title). Send and Receive also share a 3-dot Cast menu on the right for **Auto connect** and **Encryption**. Cast options (**Connection confirmation**, **Encryption**) and Web options (**Search**, **Adblock**) are their own Settings sections. First-run **Skip setup** stays at the bottom. Televisions stay landscape with the wide layout. **Connection confirmation** and **Encryption** are both OFF by default. Receive **Auto connect** skips the confirmation prompt.
 
 ### ⚡ Smart Live Stream Detection & Pre-check
 - **Intelligent URL Resolver**: Automatically resolves shortened links (tinyurl, bit.ly, etc.) and redirect links.
@@ -93,7 +95,8 @@ A compiled version of the app is available for download at: [Release](https://gi
 - Click the "Save" button.
 - The app will validate the sheet link:
     - If valid, you’ll see a toast: `Sheet loaded successfully with X videos.`
-- If invalid or no link is set, the app shows only the Browser, Refresh, and Settings cards (in the Settings row). If an update is available, an "Update available vX.Y.Z" card is also shown next to Browser.
+- On first launch (or with no CSV), **Skip setup** continues to the main screen so you can use Browser, Receive, and Send without a catalog. You can add a CSV later in Settings. On a phone, **Auto-rotate** is on (landscape / wide UI) unless you turn it off in Settings.
+- If invalid or no link is set, the app shows a **Settings** row (Browser, Refresh, Settings) and a **Cast** row (Receive, Send). If an update is available, an "Update available vX.Y.Z" card is also shown next to Browser.
 
 ### 4. Play Videos or Load Webpages
 - Browse the video groups on the main screen.
@@ -115,21 +118,28 @@ Example CSV:
     Video,Big Buck Bunny,https://bitdash-a.akamaihd.net/content/sintel/hls/playlist.m3u8,https://vz-48f70360-cc0.b-cdn.net/003223b9-e5e4-4047-8afd-7659d39924bd/thumbnail_8bbe7aa2.jpg,true
     Web,Big Buck Bunny@Wiki,https://en.wikipedia.org/wiki/Big_Buck_Bunny,,
 
-If the sheet cannot be loaded, or it parses to zero videos, the app keeps the Settings / Browser / Refresh cards and removes posters from the Android TV home screen so stale recommendations are not left behind.
+If the sheet cannot be loaded, or it parses to zero videos, the app keeps the Settings and Cast rows and removes posters from the Android TV home screen so stale recommendations are not left behind.
 
 
 
 ## Project Structure
 
 - **`MainActivity.kt`**: The main entry point of the app, hosting the `MainFragment`.
-- **`MainFragment.kt`**: Displays the Leanback UI with video rows (including Browser and Update cards) and a settings option.
+- **`MainFragment.kt`**: Displays the Leanback UI with video rows, a Settings row (Browser, Refresh, Settings, Update), and a Cast row (Receive, Send).
 - **`SetupActivity.kt`**: Allows users to specify a custom CSV URL or Google Sheets ID. Features a 2-column layout, separate About section, and 2-column Utilities.
 - **`PlaybackFragment.kt`**: Handles video playback using ExoPlayer (with improved stall recovery).
 - **`WebViewFragment.kt`**: Powers the in-app browser with pointer navigation, toolbar, and adblock.
 - **`CardPresenter.kt`**: Custom card rendering (1.5× icons for no-thumbnail/special/broken cards).
+- **`receiver/`**: Receive and Send screens, plus the native LAN library used to discover devices and play media.
 - **`Utils.kt`**: Utility functions for fetching/parsing CSV data, version checking, and URL resolution.
 - **`VideoCatalog.kt`**: CSV column parsing, `fav` handling, and home-screen program ordering.
 - **`HomeScreenPublisher.kt`**: Android TV home-screen preview channel (posters + deep link into playback).
+
+### Receive / Send
+
+Send and Receive share a 3-dot menu on the toolbar for **Auto connect** and **Encryption**. Settings lists the same options under **Cast**. Encryption is off by default. Turn it on and set the same passphrase on both devices. Local files and `http` media are encrypted on this Wi-Fi. `https` links stay a direct fetch. With encryption on, Send only plays to a matching receiver. Discovery and the title stay visible.
+
+The LAN library is [castify](https://github.com/mingminghome/csvtv-receiver) (MIT). Gradle builds it into the app when the Android NDK is available. Shared collections are hosted and shown as a slideshow by the app.
 
 ## Known Issues
 
@@ -178,6 +188,7 @@ This project is licensed under the **MIT License** — see the [LICENSE](LICENSE
 
 - [Android Leanback Library](https://developer.android.com/training/tv/start/layouts) for the TV-friendly UI.
 - [ExoPlayer (Media3)](https://github.com/androidx/media) for video playback.
+- [castify](https://github.com/mingminghome/csvtv-receiver) for LAN send and receive.
 - [OpenCSV](https://opencsv.sourceforge.net/) for CSV parsing.
 - [OkHttp](https://square.github.io/okhttp/) for HTTP requests.
 

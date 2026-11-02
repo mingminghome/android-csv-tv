@@ -21,7 +21,7 @@ object VideoCatalog {
 
     fun isUtilityCard(video: Video): Boolean {
         val url = video.url.trim().lowercase()
-        return url == "settings" || url == "refresh" || url == "browser" || url == "update"
+        return url == "settings" || url == "refresh" || url == "browser" || url == "update" || url == "receive" || url == "send"
     }
 
     /**

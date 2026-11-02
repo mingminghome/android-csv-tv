@@ -1,0 +1,175 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#121212"
+    android:orientation="vertical">
+
+    <include
+        android:id="@+id/app_toolbar"
+        layout="@layout/include_app_toolbar" />
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="#22FFFFFF" />
+
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <ScrollView
+            android:id="@+id/receive_idle"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:fillViewport="true">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:orientation="vertical"
+                android:padding="@dimen/page_padding">
+
+                <ImageView
+                    android:layout_width="@dimen/idle_icon"
+                    android:layout_height="@dimen/idle_icon"
+                    android:contentDescription="@string/receiver_idle_title"
+                    android:src="@drawable/ic_receive" />
+
+                <TextView
+                    android:id="@+id/receive_id"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="16dp"
+                    android:letterSpacing="0.16"
+                    android:textColor="#CCFFFFFF"
+                    android:textSize="18sp" />
+
+                <TextView
+                    android:id="@+id/receive_hint"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:gravity="center"
+                    android:maxWidth="560dp"
+                    android:text="@string/receiver_ready_hint"
+                    android:textColor="#A0FFFFFF"
+                    android:textSize="@dimen/subtitle_text" />
+            </LinearLayout>
+        </ScrollView>
+
+        <ImageView
+            android:id="@+id/receive_photo"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@android:color/black"
+            android:contentDescription="@string/receiver_idle_title"
+            android:scaleType="fitCenter"
+            android:visibility="gone" />
+
+        <androidx.media3.ui.PlayerView
+            android:id="@+id/receive_player"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:visibility="gone"
+            app:show_buffering="when_playing"
+            app:use_controller="true" />
+
+        <FrameLayout
+            android:id="@+id/receive_web_host"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/receive_error"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|center_horizontal"
+            android:layout_margin="24dp"
+            android:background="#99000000"
+            android:padding="12dp"
+            android:textColor="@android:color/white"
+            android:textSize="15sp"
+            android:visibility="gone" />
+
+        <LinearLayout
+            android:id="@+id/receive_confirm"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="#CC121212"
+            android:gravity="center"
+            android:orientation="vertical"
+            android:padding="@dimen/page_padding"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/receive_confirm_title"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:text="@string/receive_confirm_title"
+                android:textColor="@android:color/white"
+                android:textSize="@dimen/title_text"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/receive_confirm_message"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:gravity="center"
+                android:maxWidth="560dp"
+                android:textColor="#A0FFFFFF"
+                android:textSize="@dimen/subtitle_text" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="20dp"
+                android:gravity="center"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/receive_confirm_accept"
+                    style="@style/AppToolbarButton"
+                    android:layout_marginEnd="8dp"
+                    android:minWidth="140dp"
+                    android:text="@string/receive_confirm_accept" />
+
+                <Button
+                    android:id="@+id/receive_confirm_decline"
+                    style="@style/AppToolbarButton"
+                    android:minWidth="140dp"
+                    android:text="@string/receive_confirm_decline" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/receive_album_index"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|end"
+            android:layout_margin="20dp"
+            android:background="#99000000"
+            android:paddingStart="12dp"
+            android:paddingTop="6dp"
+            android:paddingEnd="12dp"
+            android:paddingBottom="6dp"
+            android:textColor="@android:color/white"
+            android:textSize="15sp"
+            android:visibility="gone" />
+
+        <Button
+            android:id="@+id/receive_media_back"
+            style="@style/AppToolbarButton"
+            android:layout_gravity="top|start"
+            android:layout_margin="@dimen/page_gap"
+            android:drawableStart="@drawable/ic_arrow_back"
+            android:text="@string/send_close"
+            android:visibility="gone" />
+    </FrameLayout>
+</LinearLayout>

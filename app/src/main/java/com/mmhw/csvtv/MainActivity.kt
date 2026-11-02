@@ -2,20 +2,21 @@ package com.mmhw.csvtv
 
 import android.content.Intent
 import android.os.Bundle
-import android.view.WindowManager
 import androidx.fragment.app.FragmentActivity
 import androidx.fragment.app.FragmentManager
+import com.mmhw.csvtv.receiver.ShareShortcut
 
 class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        AppChrome.prepare(this)
+        ShareShortcut.publish(this)
         setContentView(R.layout.activity_main)
 
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         val sharedPrefs = getSharedPreferences("AppPrefs", MODE_PRIVATE)
         val sheetLink = sharedPrefs.getString("sheet_link", null)
 
-        if (sheetLink.isNullOrBlank()) {
+        if (sheetLink.isNullOrBlank() && !Utils.isSetupSkipped(this)) {
             // No CSV yet → Setup as first-run init (not empty main).
             startActivity(SetupActivity.createIntent(this, initMode = true))
             finish()

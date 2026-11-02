@@ -809,14 +809,11 @@ class PlaybackFragment : Fragment() {
         handler.removeCallbacks(stablePlaybackCreditRunnable)
         releasePlayerSafely()
         player = null
-        val fragment = WebViewFragment().apply {
-            arguments = Bundle().apply {
-                putString("url", url)
-                putBoolean("skip_native_handoff", true)
-            }
-        }
         parentFragmentManager.beginTransaction()
-            .replace(R.id.fragment_container, fragment)
+            .replace(
+                R.id.fragment_container,
+                WebViewFragment.create(url, skipNativeHandoff = true)
+            )
             .commitAllowingStateLoss()
     }
 

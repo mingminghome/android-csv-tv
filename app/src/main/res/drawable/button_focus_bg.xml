@@ -15,6 +15,14 @@
             <solid android:color="#CCCCCC"/>
         </shape>
     </item>
+    <!-- Selected receiver -->
+    <item android:state_selected="true">
+        <shape android:shape="rectangle">
+            <corners android:radius="8dp"/>
+            <solid android:color="#EEEEEE"/>
+            <stroke android:width="2dp" android:color="#FFFFFF"/>
+        </shape>
+    </item>
     <!-- Default state -->
     <item>
         <shape android:shape="rectangle">

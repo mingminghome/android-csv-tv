@@ -12,7 +12,7 @@ object CatalogNetworkPolicy {
 
     fun isUtilityUrl(url: String): Boolean {
         val u = url.trim().lowercase()
-        return u == "settings" || u == "refresh" || u == "browser" || u == "update"
+        return u == "settings" || u == "refresh" || u == "browser" || u == "update" || u == "receive" || u == "send"
     }
 
     fun shouldSkipPrecheck(video: Video): Boolean {

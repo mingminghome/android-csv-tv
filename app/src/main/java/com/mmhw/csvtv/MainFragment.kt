@@ -29,6 +29,8 @@ import androidx.leanback.widget.ListRow
 import androidx.leanback.widget.ListRowPresenter
 import androidx.leanback.widget.OnItemViewClickedListener
 import androidx.leanback.widget.OnItemViewSelectedListener
+import com.mmhw.csvtv.receiver.ReceiveActivity
+import com.mmhw.csvtv.receiver.SendActivity
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -201,6 +203,14 @@ class MainFragment : BrowseSupportFragment() {
                 openWebViewFragment(browserUrl, isBrowserCard = true)
                 return
             }
+            url.equals("receive", ignoreCase = true) -> {
+                startActivity(Intent(requireContext(), ReceiveActivity::class.java))
+                return
+            }
+            url.equals("send", ignoreCase = true) -> {
+                startActivity(Intent(requireContext(), SendActivity::class.java))
+                return
+            }
             url.equals("update", ignoreCase = true) || title.startsWith("Update available", ignoreCase = true) -> {
                 showUpdateDialog()
                 return
@@ -349,19 +359,11 @@ class MainFragment : BrowseSupportFragment() {
         isBrowserCard: Boolean = false,
         skipNativeHandoff: Boolean = false
     ) {
-        val fragment = WebViewFragment().apply {
-            arguments = Bundle().apply {
-                putString("url", url)
-                if (isBrowserCard) {
-                    putBoolean("is_browser_card", true)
-                }
-                if (skipNativeHandoff) {
-                    putBoolean("skip_native_handoff", true)
-                }
-            }
-        }
         parentFragmentManager.beginTransaction()
-            .replace(R.id.fragment_container, fragment)
+            .replace(
+                R.id.fragment_container,
+                WebViewFragment.create(url, isBrowserCard, skipNativeHandoff)
+            )
             .addToBackStack(null)
             .commit()
         leftForPlayer = true
@@ -572,44 +574,49 @@ class MainFragment : BrowseSupportFragment() {
 
     private fun showSettingsAndRefreshOnly() {
         rowsAdapter.clear()
-        val settingsHeader = HeaderItem(0, "Settings")
-        val settingsRowAdapter = ArrayObjectAdapter(CardPresenter(this)).apply {
-            add(Video("Browser", "browser", null))
-            add(Video("Refresh", "Refresh", null))
-            add(Video("Settings", "Settings", null))
-        }
-        rowsAdapter.add(ListRow(settingsHeader, settingsRowAdapter))
+        appendUtilityRows()
     }
 
     private fun updateRows() {
         rowsAdapter.clear()
 
         val groupNames = videos.map { it.groupName }.distinct().sorted()
-        val drawerItems = groupNames + listOf("Settings")
-
-        drawerItems.forEachIndexed { index, item ->
+        groupNames.forEachIndexed { index, item ->
             val header = HeaderItem(index.toLong(), item)
-            val rowAdapter = if (item == "Settings") {
-                ArrayObjectAdapter(CardPresenter(this)).apply {
-                    latestUpdateVersion?.let { version ->
-                        add(Video("Update available v$version", "update", null))
-                    }
-                    add(Video("Browser", "browser", null))
-                    add(Video("Refresh", "Refresh", null))
-                    add(Video("Settings", "Settings", null))
-                }
-            } else {
-                ArrayObjectAdapter(CardPresenter(this)).apply {
-                    val filteredVideos = videos.filter { it.groupName == item }
-                    if (filteredVideos.isEmpty()) {
-                        add(Video("", "No videos available for this group.", null))
-                    } else {
-                        addAll(0, filteredVideos)
-                    }
+            val rowAdapter = ArrayObjectAdapter(CardPresenter(this)).apply {
+                val filteredVideos = videos.filter { it.groupName == item }
+                if (filteredVideos.isEmpty()) {
+                    add(Video("", "No videos available for this group.", null))
+                } else {
+                    addAll(0, filteredVideos)
                 }
             }
-
             rowsAdapter.add(ListRow(header, rowAdapter))
+        }
+        appendUtilityRows()
+    }
+
+    private fun appendUtilityRows() {
+        val startId = rowsAdapter.size().toLong()
+        rowsAdapter.add(ListRow(HeaderItem(startId, "Settings"), settingsCards()))
+        rowsAdapter.add(ListRow(HeaderItem(startId + 1, "Cast"), castCards()))
+    }
+
+    private fun settingsCards(): ArrayObjectAdapter {
+        return ArrayObjectAdapter(CardPresenter(this)).apply {
+            latestUpdateVersion?.let { version ->
+                add(Video("Update available v$version", "update", null))
+            }
+            add(Video("Browser", "browser", null))
+            add(Video("Refresh", "Refresh", null))
+            add(Video("Settings", "Settings", null))
+        }
+    }
+
+    private fun castCards(): ArrayObjectAdapter {
+        return ArrayObjectAdapter(CardPresenter(this)).apply {
+            add(Video("Receive", "receive", null))
+            add(Video("Send", "send", null))
         }
     }
 

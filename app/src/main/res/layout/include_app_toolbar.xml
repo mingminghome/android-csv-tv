@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:gravity="center_vertical"
+    android:minHeight="@dimen/toolbar_height"
+    android:orientation="horizontal"
+    android:paddingStart="@dimen/page_padding"
+    android:paddingTop="8dp"
+    android:paddingEnd="@dimen/page_padding"
+    android:paddingBottom="8dp">
+
+    <Button
+        android:id="@+id/toolbar_back"
+        style="@style/AppToolbarButton"
+        android:contentDescription="@string/send_close"
+        android:drawableStart="@drawable/ic_arrow_back"
+        android:nextFocusRight="@id/toolbar_more"
+        android:text="@string/send_close" />
+
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="12dp"
+        android:layout_marginEnd="12dp"
+        android:layout_weight="1"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/toolbar_title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:textColor="@android:color/white"
+            android:textSize="@dimen/title_text"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/toolbar_subtitle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="1dp"
+            android:ellipsize="end"
+            android:maxLines="2"
+            android:textColor="#A0FFFFFF"
+            android:textSize="@dimen/subtitle_text" />
+    </LinearLayout>
+
+    <ImageButton
+        android:id="@+id/toolbar_more"
+        style="@style/AppToolbarIconButton"
+        android:contentDescription="@string/cast_overflow"
+        android:nextFocusLeft="@id/toolbar_back"
+        android:src="@drawable/ic_more_vert"
+        android:tooltipText="@string/cast_overflow"
+        android:visibility="gone" />
+</LinearLayout>
