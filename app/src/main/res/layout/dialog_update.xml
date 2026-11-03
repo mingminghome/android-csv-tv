@@ -12,7 +12,7 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:padding="28dp">
+        android:padding="@dimen/update_dialog_padding">
 
         <TextView
             android:id="@+id/update_dialog_title"
@@ -44,7 +44,7 @@
         <ScrollView
             android:id="@+id/update_notes_scroll"
             android:layout_width="match_parent"
-            android:layout_height="180dp"
+            android:layout_height="@dimen/update_notes_height"
             android:layout_marginTop="8dp"
             android:background="#121212"
             android:fadeScrollbars="false"
@@ -117,7 +117,7 @@
                 android:layout_marginEnd="12dp"
                 android:background="@drawable/button_focus_bg"
                 android:focusable="true"
-                android:minWidth="120dp"
+                android:minWidth="@dimen/update_btn_min_width"
                 android:paddingHorizontal="20dp"
                 android:text="Cancel"
                 android:textAllCaps="false"
@@ -129,7 +129,7 @@
                 android:layout_height="48dp"
                 android:background="@drawable/button_focus_bg"
                 android:focusable="true"
-                android:minWidth="140dp"
+                android:minWidth="@dimen/update_btn_min_width"
                 android:paddingHorizontal="20dp"
                 android:text="Download"
                 android:textAllCaps="false"

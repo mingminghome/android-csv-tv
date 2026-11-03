@@ -139,16 +139,27 @@
                     android:layout_weight="1"
                     android:orientation="vertical">
 
+                    <LinearLayout
+                        android:id="@+id/auto_rotate_section"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:visibility="gone">
+
+                        <TextView
+                            style="@style/SetupSectionTitle"
+                            android:text="@string/setup_section_display" />
+
+                        <Button
+                            android:id="@+id/auto_rotate_toggle"
+                            style="@style/SetupActionButton"
+                            android:drawableStart="@drawable/ic_screen_rotation"
+                            android:text="@string/setup_auto_rotate_on" />
+                    </LinearLayout>
+
                     <TextView
                         style="@style/SetupSectionTitle"
                         android:text="Settings" />
-
-                    <Button
-                        android:id="@+id/auto_rotate_toggle"
-                        style="@style/SetupActionButton"
-                        android:drawableStart="@drawable/ic_screen_rotation"
-                        android:text="@string/setup_auto_rotate_on"
-                        android:visibility="gone" />
 
                     <Button
                         android:id="@+id/source_details_toggle"

@@ -11,8 +11,11 @@ import androidx.core.view.WindowInsetsCompat
  * orientation, keep-awake, and system-bar padding.
  */
 object AppChrome {
-    fun prepare(activity: Activity) {
-        OrientationPolicy.apply(activity)
+    fun prepare(
+        activity: Activity,
+        orientation: OrientationPolicy.Mode = OrientationPolicy.Mode.Browse
+    ) {
+        OrientationPolicy.apply(activity, orientation)
         activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
 

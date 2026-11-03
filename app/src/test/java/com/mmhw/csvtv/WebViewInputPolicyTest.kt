@@ -1,5 +1,6 @@
 package com.mmhw.csvtv
 
+import android.view.KeyEvent
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -159,6 +160,42 @@ class WebViewInputPolicyTest {
     fun dpadDeltaMovesInKeyDirection() {
         assertEquals(0f to -20f, WebViewInputPolicy.dpadDelta(WebViewInputPolicy.DpadDir.UP, 20f))
         assertEquals(20f to 0f, WebViewInputPolicy.dpadDelta(WebViewInputPolicy.DpadDir.RIGHT, 20f))
+    }
+
+    @Test
+    fun remoteMediaKeysZoomWithoutZoomMode() {
+        assertEquals(
+            WebViewInputPolicy.ZoomAction.IN,
+            WebViewInputPolicy.zoomAction(KeyEvent.KEYCODE_MEDIA_FAST_FORWARD, zoomMode = false)
+        )
+        assertEquals(
+            WebViewInputPolicy.ZoomAction.OUT,
+            WebViewInputPolicy.zoomAction(KeyEvent.KEYCODE_MEDIA_REWIND, zoomMode = false)
+        )
+        assertEquals(
+            WebViewInputPolicy.ZoomAction.TOGGLE_MODE,
+            WebViewInputPolicy.zoomAction(KeyEvent.KEYCODE_MENU, zoomMode = false)
+        )
+    }
+
+    @Test
+    fun dpadZoomsOnlyInZoomMode() {
+        assertEquals(
+            WebViewInputPolicy.ZoomAction.NONE,
+            WebViewInputPolicy.zoomAction(KeyEvent.KEYCODE_DPAD_UP, zoomMode = false)
+        )
+        assertEquals(
+            WebViewInputPolicy.ZoomAction.IN,
+            WebViewInputPolicy.zoomAction(KeyEvent.KEYCODE_DPAD_UP, zoomMode = true)
+        )
+        assertEquals(
+            WebViewInputPolicy.ZoomAction.OUT,
+            WebViewInputPolicy.zoomAction(KeyEvent.KEYCODE_DPAD_DOWN, zoomMode = true)
+        )
+        assertEquals(
+            WebViewInputPolicy.ZoomAction.NONE,
+            WebViewInputPolicy.zoomAction(KeyEvent.KEYCODE_DPAD_LEFT, zoomMode = true)
+        )
     }
 
     @Test

@@ -9,4 +9,8 @@
     <dimen name="subtitle_text">15sp</dimen>
     <dimen name="action_height">52dp</dimen>
     <dimen name="idle_action_max">480dp</dimen>
+    <dimen name="update_notes_height">180dp</dimen>
+    <dimen name="update_notes_min_height">96dp</dimen>
+    <dimen name="update_dialog_padding">28dp</dimen>
+    <dimen name="update_btn_min_width">120dp</dimen>
 </resources>

@@ -20,4 +20,12 @@
         android:layout_width="match_parent"
         android:drawableStart="@drawable/ic_settings_icon"
         android:text="@string/setup_encryption_off" />
+
+    <Button
+        android:id="@+id/overflow_auto_rotate"
+        style="@style/CastOverflowButton"
+        android:layout_width="match_parent"
+        android:drawableStart="@drawable/ic_screen_rotation"
+        android:text="@string/setup_auto_rotate_on"
+        android:visibility="gone" />
 </LinearLayout>

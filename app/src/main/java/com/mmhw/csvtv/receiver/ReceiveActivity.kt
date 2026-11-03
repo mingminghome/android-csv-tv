@@ -1,6 +1,7 @@
 package com.mmhw.csvtv.receiver
 
 import android.content.Intent
+import android.content.res.Configuration
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -22,6 +23,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import com.mmhw.csvtv.AppChrome
 import com.mmhw.csvtv.AppPlayer
 import com.mmhw.csvtv.MainActivity
+import com.mmhw.csvtv.OrientationPolicy
 import com.mmhw.csvtv.WebViewFragment
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
@@ -84,10 +86,15 @@ class ReceiveActivity : AppCompatActivity(), NativeReceiver.Listener, WebViewFra
     private lateinit var albumBadge: TextView
     private val albumAdvance = Runnable { showAlbumItem(albumIndex + 1) }
     private lateinit var albumGestures: GestureDetector
+    private lateinit var playerGestures: GestureDetector
+    private var overlayVisible = true
+    private var overlayBackEnabled = false
+    private var applyingPlayerController = false
+    private val hideOverlayRunnable = Runnable { hideOverlay() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        AppChrome.prepare(this)
+        AppChrome.prepare(this, OrientationPolicy.Mode.Receive)
         setContentView(R.layout.activity_receive)
         AppChrome.padSystemBars(this) { liveFullscreen }
 
@@ -114,19 +121,45 @@ class ReceiveActivity : AppCompatActivity(), NativeReceiver.Listener, WebViewFra
             subtitle = getString(R.string.receiver_id_label, shortId),
             onBack = { handleReceiveBack() }
         )
-        CastOverflow.attach(this) {
+        CastOverflow.attach(
+            activity = this,
+            showAutoRotate = true
+        ) {
             refreshCastState()
             if (ReceiveConnect.autoConnect(this) && pendingUri != null) {
                 acceptPending()
             }
         }
         mediaBack.setOnClickListener { handleReceiveBack() }
-        sizeButton.setOnClickListener { toggleScreenSize() }
+        sizeButton.setOnClickListener {
+            toggleScreenSize()
+            revealOverlay()
+        }
         findViewById<Button>(R.id.receive_confirm_accept).setOnClickListener { acceptPending() }
         findViewById<Button>(R.id.receive_confirm_decline).setOnClickListener { declinePending() }
         albumGestures = GestureDetector(this, albumGestureListener())
+        playerGestures = GestureDetector(this, playerTapListener())
         photo.setOnTouchListener { _, event ->
-            album != null && albumGestures.onTouchEvent(event)
+            photo.visibility == View.VISIBLE && albumGestures.onTouchEvent(event)
+        }
+        playerView.controllerShowTimeoutMs = ReceiveChromePolicy.AUTO_HIDE_MS.toInt()
+        playerView.setControllerVisibilityListener(
+            PlayerView.ControllerVisibilityListener { visibility ->
+                if (applyingPlayerController || liveTs || album != null) return@ControllerVisibilityListener
+                if (!chromeAutoHides()) return@ControllerVisibilityListener
+                if (visibility == View.VISIBLE) {
+                    revealOverlay(showPlayerController = false)
+                } else {
+                    overlayVisible = false
+                    applyOverlayButtons()
+                    main.removeCallbacks(hideOverlayRunnable)
+                }
+            }
+        )
+        playerView.setOnTouchListener { _, event ->
+            if (!liveTs && album == null) return@setOnTouchListener false
+            playerGestures.onTouchEvent(event)
+            true
         }
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -145,6 +178,16 @@ class ReceiveActivity : AppCompatActivity(), NativeReceiver.Listener, WebViewFra
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN &&
+            event.keyCode != KeyEvent.KEYCODE_BACK &&
+            chromeAutoHides()
+        ) {
+            val hidden = !overlayVisible
+            revealOverlay()
+            if (hidden && liveTs && isActivateKey(event.keyCode)) {
+                return true
+            }
+        }
         if (event.action == KeyEvent.ACTION_DOWN && album != null) {
             when (ReceiveKeys.albumAction(event.keyCode)) {
                 ReceiveKeys.NEXT -> {
@@ -175,7 +218,13 @@ class ReceiveActivity : AppCompatActivity(), NativeReceiver.Listener, WebViewFra
 
     override fun onResume() {
         super.onResume()
+        OrientationPolicy.apply(this, OrientationPolicy.Mode.Receive)
         refreshCastState()
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        AppChrome.requestInsets(this)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -187,6 +236,7 @@ class ReceiveActivity : AppCompatActivity(), NativeReceiver.Listener, WebViewFra
     override fun onDestroy() {
         NativeReceiver.removeListener(this)
         main.removeCallbacks(liveStableCheck)
+        main.removeCallbacks(hideOverlayRunnable)
         stopAlbum()
         releasePlayer()
         photo.setImageDrawable(null)
@@ -529,7 +579,6 @@ class ReceiveActivity : AppCompatActivity(), NativeReceiver.Listener, WebViewFra
     private fun refreshAlbumBadge() {
         val current = album ?: return
         if (!this::albumBadge.isInitialized) return
-        albumBadge.visibility = View.VISIBLE
         val n = albumIndex + 1
         val total = current.items.size
         albumBadge.text = if (albumPaused) {
@@ -537,6 +586,7 @@ class ReceiveActivity : AppCompatActivity(), NativeReceiver.Listener, WebViewFra
         } else {
             getString(R.string.receiver_album_index, n, total)
         }
+        applyOverlayButtons()
     }
 
     private fun stopAlbum() {
@@ -579,9 +629,13 @@ class ReceiveActivity : AppCompatActivity(), NativeReceiver.Listener, WebViewFra
     private fun showReceiveChrome(media: Boolean, overlayBack: Boolean = media) {
         toolbar.visibility = if (media) View.GONE else View.VISIBLE
         toolbarRule.visibility = if (media) View.GONE else View.VISIBLE
-        mediaBack.visibility = if (overlayBack) View.VISIBLE else View.GONE
-        if (!liveTs) {
-            sizeButton.visibility = View.GONE
+        overlayBackEnabled = overlayBack && media
+        if (media && chromeAutoHides()) {
+            revealOverlay()
+        } else {
+            main.removeCallbacks(hideOverlayRunnable)
+            overlayVisible = true
+            applyOverlayButtons()
         }
     }
 
@@ -603,13 +657,12 @@ class ReceiveActivity : AppCompatActivity(), NativeReceiver.Listener, WebViewFra
             clearLiveChrome()
             return
         }
-        mediaBack.visibility = View.GONE
+        overlayBackEnabled = false
         playerView.useController = false
         playerView.hideController()
-        sizeButton.visibility = View.VISIBLE
         setLiveFullscreen(true)
         applyScreenSize()
-        sizeButton.requestFocus()
+        revealOverlay()
     }
 
     private fun toggleScreenSize() {
@@ -678,14 +731,101 @@ class ReceiveActivity : AppCompatActivity(), NativeReceiver.Listener, WebViewFra
         finish()
     }
 
-    private fun albumGestureListener() = object : GestureDetector.SimpleOnGestureListener() {
-        override fun onDown(e: MotionEvent): Boolean = album != null
+    private fun chromeAutoHides(): Boolean {
+        if (!this::idle.isInitialized) return false
+        return ReceiveChromePolicy.autoHides(
+            showingMedia = showingMedia(),
+            web = webShowing(),
+            confirm = confirmVisible(),
+            idle = idle.visibility == View.VISIBLE
+        )
+    }
 
-        override fun onSingleTapUp(e: MotionEvent): Boolean {
-            if (album == null) return false
-            toggleAlbumPause()
+    private fun revealOverlay(showPlayerController: Boolean = true) {
+        overlayVisible = true
+        applyOverlayButtons()
+        if (showPlayerController &&
+            this::playerView.isInitialized &&
+            playerView.visibility == View.VISIBLE &&
+            !liveTs &&
+            album == null
+        ) {
+            applyingPlayerController = true
+            playerView.showController()
+            applyingPlayerController = false
+        }
+        scheduleHideOverlay()
+        if (liveTs && sizeButton.visibility == View.VISIBLE) {
+            sizeButton.requestFocus()
+        }
+    }
+
+    private fun hideOverlay() {
+        if (!chromeAutoHides()) return
+        overlayVisible = false
+        applyOverlayButtons()
+        main.removeCallbacks(hideOverlayRunnable)
+        if (this::playerView.isInitialized &&
+            playerView.visibility == View.VISIBLE &&
+            !liveTs &&
+            album == null
+        ) {
+            applyingPlayerController = true
+            playerView.hideController()
+            applyingPlayerController = false
+        }
+    }
+
+    private fun scheduleHideOverlay() {
+        main.removeCallbacks(hideOverlayRunnable)
+        if (chromeAutoHides()) {
+            main.postDelayed(hideOverlayRunnable, ReceiveChromePolicy.AUTO_HIDE_MS)
+        }
+    }
+
+    private fun applyOverlayButtons() {
+        if (!this::mediaBack.isInitialized) return
+        val auto = chromeAutoHides()
+        val show = !auto || overlayVisible
+        mediaBack.visibility = if (show && overlayBackEnabled && !liveTs) View.VISIBLE else View.GONE
+        sizeButton.visibility = if (show && liveTs) View.VISIBLE else View.GONE
+        if (this::albumBadge.isInitialized) {
+            albumBadge.visibility = if (show && album != null) View.VISIBLE else View.GONE
+        }
+    }
+
+    private fun onMediaTap(): Boolean {
+        if (!chromeAutoHides()) return false
+        if (!overlayVisible) {
+            revealOverlay()
             return true
         }
+        if (album != null) {
+            toggleAlbumPause()
+            revealOverlay()
+            return true
+        }
+        hideOverlay()
+        return true
+    }
+
+    private fun isActivateKey(keyCode: Int): Boolean {
+        return keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
+            keyCode == KeyEvent.KEYCODE_ENTER ||
+            keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER ||
+            keyCode == KeyEvent.KEYCODE_SPACE
+    }
+
+    private fun playerTapListener() = object : GestureDetector.SimpleOnGestureListener() {
+        override fun onDown(e: MotionEvent): Boolean = liveTs || album != null
+
+        override fun onSingleTapUp(e: MotionEvent): Boolean = onMediaTap()
+    }
+
+    private fun albumGestureListener() = object : GestureDetector.SimpleOnGestureListener() {
+        override fun onDown(e: MotionEvent): Boolean = photo.visibility == View.VISIBLE
+
+        override fun onSingleTapUp(e: MotionEvent): Boolean = onMediaTap()
 
         override fun onFling(
             e1: MotionEvent?,
@@ -698,6 +838,7 @@ class ReceiveActivity : AppCompatActivity(), NativeReceiver.Listener, WebViewFra
             val dy = e2.y - e1.y
             if (kotlin.math.abs(dx) < 80 || kotlin.math.abs(dx) < kotlin.math.abs(dy)) return false
             if (dx < 0) showAlbumItem(albumIndex + 1) else showAlbumItem(albumIndex - 1)
+            revealOverlay()
             return true
         }
     }
@@ -717,6 +858,9 @@ class ReceiveActivity : AppCompatActivity(), NativeReceiver.Listener, WebViewFra
         titleView.text = getString(R.string.receiver_idle_title)
         hint.text = idleHint()
         clearLiveChrome()
+        overlayBackEnabled = false
+        overlayVisible = true
+        main.removeCallbacks(hideOverlayRunnable)
         showReceiveChrome(media = false)
     }
 

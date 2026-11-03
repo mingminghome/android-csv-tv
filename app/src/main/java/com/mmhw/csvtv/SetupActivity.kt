@@ -83,6 +83,7 @@ class SetupActivity : FragmentActivity() {
         val applyButton = findViewById<Button>(R.id.apply_button)
         val aboutButton = findViewById<Button>(R.id.about_button)
         val autoRotateToggle = findViewById<Button>(R.id.auto_rotate_toggle)
+        val autoRotateSection = findViewById<View>(R.id.auto_rotate_section)
         val confirmToggle = findViewById<Button>(R.id.confirm_connection_toggle)
         val encryptionToggle = findViewById<Button>(R.id.encryption_toggle)
 
@@ -112,7 +113,7 @@ class SetupActivity : FragmentActivity() {
             )
         }
         if (DeviceProfile.isHandheld(this)) {
-            autoRotateToggle.visibility = View.VISIBLE
+            autoRotateSection.visibility = View.VISIBLE
             updateAutoRotateText()
             autoRotateToggle.setOnClickListener {
                 val next = !Utils.isAutoRotateEnabled(this)
@@ -122,7 +123,7 @@ class SetupActivity : FragmentActivity() {
                 showToast("Auto-rotate ${if (next) "ON" else "OFF"}")
             }
         } else {
-            autoRotateToggle.visibility = View.GONE
+            autoRotateSection.visibility = View.GONE
         }
 
         fun updateConfirmText() {

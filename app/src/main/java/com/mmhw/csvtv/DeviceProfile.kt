@@ -6,21 +6,31 @@ import android.content.pm.PackageManager
 import android.content.res.Configuration
 
 /**
- * TV vs handheld. Fire TV / Android TV report television UI mode or Leanback.
- * Phones and tablets do not, so they get auto-rotate and the narrow settings layout.
+ * Single TV vs phone/tablet check for orientation, Settings, and chrome.
+ * Fire TV / Android TV report television UI mode or Leanback.
  */
 object DeviceProfile {
+    enum class Kind { Television, Handheld }
 
-    fun isTelevision(uiModeType: Int, hasLeanbackFeature: Boolean): Boolean {
-        return uiModeType == Configuration.UI_MODE_TYPE_TELEVISION || hasLeanbackFeature
+    fun kind(uiModeType: Int, hasLeanbackFeature: Boolean): Kind {
+        return if (uiModeType == Configuration.UI_MODE_TYPE_TELEVISION || hasLeanbackFeature) {
+            Kind.Television
+        } else {
+            Kind.Handheld
+        }
     }
 
-    fun isTelevision(context: Context): Boolean {
+    fun kind(context: Context): Kind {
         val uiMode = context.getSystemService(Context.UI_MODE_SERVICE) as? UiModeManager
         val uiModeType = uiMode?.currentModeType ?: Configuration.UI_MODE_TYPE_NORMAL
         val hasLeanback = context.packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
-        return isTelevision(uiModeType, hasLeanback)
+        return kind(uiModeType, hasLeanback)
     }
 
-    fun isHandheld(context: Context): Boolean = !isTelevision(context)
+    fun isTelevision(uiModeType: Int, hasLeanbackFeature: Boolean): Boolean =
+        kind(uiModeType, hasLeanbackFeature) == Kind.Television
+
+    fun isTelevision(context: Context): Boolean = kind(context) == Kind.Television
+
+    fun isHandheld(context: Context): Boolean = kind(context) == Kind.Handheld
 }

@@ -701,11 +701,9 @@ class MainFragment : BrowseSupportFragment() {
         dialog.setCancelable(true)
         dialog.setCanceledOnTouchOutside(false)
 
-        dialog.window?.setLayout(
-            (resources.displayMetrics.widthPixels * 0.62f).toInt().coerceIn(520, 900),
-            ViewGroup.LayoutParams.WRAP_CONTENT
-        )
         dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
+        dialog.window?.setGravity(android.view.Gravity.CENTER)
+        applyUpdateDialogWindowWidth(dialog)
 
         val titleView = dialog.findViewById<TextView>(R.id.update_dialog_title)
         val subtitleView = dialog.findViewById<TextView>(R.id.update_dialog_subtitle)
@@ -753,18 +751,59 @@ class MainFragment : BrowseSupportFragment() {
         }
 
         updateDialog = dialog
+        dialog.show()
         refreshUpdateDialogUi()
         if (isUpdateDownloadInProgress) {
             handler.removeCallbacks(downloadProgressRunnable)
             handler.post(downloadProgressRunnable)
         }
-        dialog.show()
         // Prefer primary action for D-pad focus on TV
         updateActionBtn?.requestFocus()
     }
 
+    private fun applyUpdateDialogWindowWidth(dialog: Dialog) {
+        val dm = resources.displayMetrics
+        dialog.window?.setLayout(
+            UpdateDialogLayout.widthPx(dm.widthPixels, dm.density),
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        )
+    }
+
+    private fun fitUpdateDialogToScreen() {
+        val dialog = updateDialog ?: return
+        val window = dialog.window ?: return
+        val notes = dialog.findViewById<View>(R.id.update_notes_scroll) ?: return
+        val content = dialog.findViewById<View>(android.R.id.content) ?: return
+        val card = (content as? ViewGroup)?.getChildAt(0) ?: content
+        val dm = resources.displayMetrics
+        val width = UpdateDialogLayout.widthPx(dm.widthPixels, dm.density)
+        val maxH = UpdateDialogLayout.maxHeightPx(dm.heightPixels, dm.density)
+        val maxNotes = resources.getDimensionPixelSize(R.dimen.update_notes_height)
+        val minNotes = resources.getDimensionPixelSize(R.dimen.update_notes_min_height)
+
+        applyUpdateDialogWindowWidth(dialog)
+        card.post {
+            if (updateDialog !== dialog) return@post
+            val lp = notes.layoutParams
+            lp.height = maxNotes
+            notes.layoutParams = lp
+            card.measure(
+                View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+            )
+            val measuredNotes = notes.measuredHeight.takeIf { it > 0 } ?: maxNotes
+            val chrome = (card.measuredHeight - measuredNotes).coerceAtLeast(0)
+            val notesH = UpdateDialogLayout.notesHeightPx(maxH, chrome, minNotes, maxNotes)
+            if (lp.height != notesH) {
+                lp.height = notesH
+                notes.layoutParams = lp
+            }
+            window.setLayout(width, ViewGroup.LayoutParams.WRAP_CONTENT)
+        }
+    }
+
     private fun refreshUpdateDialogUi() {
-        if (updateDialog?.isShowing != true) return
+        if (updateDialog == null) return
 
         when {
             isUpdateDownloaded -> {
@@ -796,6 +835,7 @@ class MainFragment : BrowseSupportFragment() {
                 updateCancelBtn?.text = "Cancel"
             }
         }
+        fitUpdateDialogToScreen()
     }
 
     /**

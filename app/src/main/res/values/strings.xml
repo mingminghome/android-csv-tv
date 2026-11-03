@@ -29,6 +29,7 @@
     <string name="setup_confirm_off">Connection confirmation: OFF</string>
     <string name="setup_section_cast">Cast</string>
     <string name="setup_section_web">Web</string>
+    <string name="setup_section_display">Display</string>
     <string name="setup_encryption_on">Encryption: ON</string>
     <string name="setup_encryption_off">Encryption: OFF</string>
     <string name="cast_overflow">Cast settings</string>

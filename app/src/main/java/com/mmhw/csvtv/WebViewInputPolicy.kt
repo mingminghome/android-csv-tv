@@ -1,5 +1,7 @@
 package com.mmhw.csvtv
 
+import android.view.KeyEvent
+
 /**
  * D-pad pointer, toolbar chrome, and Center-click routing for the TV WebView.
  *
@@ -20,6 +22,7 @@ object WebViewInputPolicy {
     const val SPEED_ACCEL_AFTER_MS = 300L
     const val SPEED_ACCEL_RAMP_MS = 1500L
     const val SPEED_MAX_MULTIPLIER = 4f
+    const val ZOOM_MODE_MS = 4_000L
 
     enum class CenterAction {
         OPEN_URL_BAR,
@@ -33,6 +36,33 @@ object WebViewInputPolicy {
     }
 
     enum class DpadDir { UP, DOWN, LEFT, RIGHT }
+
+    enum class ZoomAction { IN, OUT, TOGGLE_MODE, NONE }
+
+    /**
+     * TV remotes zoom with Rewind / Fast-forward. D-pad-only remotes press
+     * Menu, then Up / Down while zoom mode is on.
+     */
+    fun zoomAction(keyCode: Int, zoomMode: Boolean): ZoomAction {
+        return when (keyCode) {
+            KeyEvent.KEYCODE_ZOOM_IN,
+            KeyEvent.KEYCODE_PLUS,
+            KeyEvent.KEYCODE_EQUALS,
+            KeyEvent.KEYCODE_NUMPAD_ADD,
+            KeyEvent.KEYCODE_MEDIA_FAST_FORWARD,
+            KeyEvent.KEYCODE_CHANNEL_UP -> ZoomAction.IN
+            KeyEvent.KEYCODE_ZOOM_OUT,
+            KeyEvent.KEYCODE_MINUS,
+            KeyEvent.KEYCODE_NUMPAD_SUBTRACT,
+            KeyEvent.KEYCODE_MEDIA_REWIND,
+            KeyEvent.KEYCODE_CHANNEL_DOWN -> ZoomAction.OUT
+            KeyEvent.KEYCODE_MENU,
+            KeyEvent.KEYCODE_INFO -> ZoomAction.TOGGLE_MODE
+            KeyEvent.KEYCODE_DPAD_UP -> if (zoomMode) ZoomAction.IN else ZoomAction.NONE
+            KeyEvent.KEYCODE_DPAD_DOWN -> if (zoomMode) ZoomAction.OUT else ZoomAction.NONE
+            else -> ZoomAction.NONE
+        }
+    }
 
     fun centerAction(
         urlBarFocused: Boolean,

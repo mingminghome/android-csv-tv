@@ -80,6 +80,8 @@ class WebViewFragment : Fragment() {
     private var originalOrientation: Int = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
     private var isInFullscreen = false
     private var isCursorShowing = false
+    private var pageZoomMode = false
+    private val zoomModeExpire = Runnable { pageZoomMode = false }
     private val jsHandler = Handler(Looper.getMainLooper())
     private var isOnChallengePage = false
     private var lastChallengeProbeAt = 0L
@@ -1571,6 +1573,24 @@ class WebViewFragment : Fragment() {
 
         if (event.action != KeyEvent.ACTION_DOWN) return false
 
+        if (!isInFullscreen) {
+            when (WebViewInputPolicy.zoomAction(keyCode, pageZoomMode)) {
+                WebViewInputPolicy.ZoomAction.IN -> {
+                    applyPageZoom(zoomIn = true)
+                    return true
+                }
+                WebViewInputPolicy.ZoomAction.OUT -> {
+                    applyPageZoom(zoomIn = false)
+                    return true
+                }
+                WebViewInputPolicy.ZoomAction.TOGGLE_MODE -> {
+                    togglePageZoomMode()
+                    return true
+                }
+                WebViewInputPolicy.ZoomAction.NONE -> Unit
+            }
+        }
+
         if (isInFullscreen) {
             if (isCursorShowing) {
                 // --- CURSOR MODE ---
@@ -1679,6 +1699,31 @@ class WebViewFragment : Fragment() {
             }
         }
         return false
+    }
+
+    private fun togglePageZoomMode() {
+        pageZoomMode = !pageZoomMode
+        pointerHideHandler.removeCallbacks(zoomModeExpire)
+        if (pageZoomMode) {
+            pointerHideHandler.postDelayed(zoomModeExpire, WebViewInputPolicy.ZOOM_MODE_MS)
+            showToast("Zoom · Up / Down")
+        }
+    }
+
+    private fun applyPageZoom(zoomIn: Boolean) {
+        if (isWebViewDestroyed || !::webView.isInitialized) return
+        val applied = try {
+            if (zoomIn) webView.zoomIn() else webView.zoomOut()
+        } catch (_: Exception) {
+            false
+        }
+        if (!applied) return
+        if (pageZoomMode) {
+            pointerHideHandler.removeCallbacks(zoomModeExpire)
+            pointerHideHandler.postDelayed(zoomModeExpire, WebViewInputPolicy.ZOOM_MODE_MS)
+        }
+        setCursorVisibility(true)
+        webView.post { updateContentDimensions() }
     }
 
     /**
@@ -2362,6 +2407,7 @@ class WebViewFragment : Fragment() {
         sslPromptHandlers.clear()
         sslPromptHost = null
         super.onDestroyView()
+        pageZoomMode = false
         pointerHideHandler.removeCallbacksAndMessages(null)
         keyResetHandler.removeCallbacksAndMessages(null)
         jsHandler.removeCallbacksAndMessages(null)
