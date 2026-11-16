@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:clickable="false"
+    android:focusable="false">
+
+    <LinearLayout
+        android:id="@+id/pip_bar"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|center_horizontal"
+        android:layout_marginBottom="28dp"
+        android:background="@drawable/pip_bar_bg"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:padding="4dp"
+        android:visibility="gone" />
+
+    <FrameLayout
+        android:id="@+id/pip_ring"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:background="@drawable/pip_ring"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/pip_label"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top"
+            android:background="#CC1F1F1F"
+            android:ellipsize="end"
+            android:gravity="center"
+            android:maxLines="1"
+            android:padding="6dp"
+            android:textColor="#F5F5F5"
+            android:textSize="13sp" />
+    </FrameLayout>
+
+    <ImageView
+        android:id="@+id/pip_speaker"
+        android:layout_width="28dp"
+        android:layout_height="28dp"
+        android:background="@drawable/pip_speaker_bg"
+        android:clickable="false"
+        android:contentDescription="Sound"
+        android:focusable="false"
+        android:padding="4dp"
+        android:src="@drawable/ic_pip_speaker"
+        android:visibility="gone" />
+</FrameLayout>

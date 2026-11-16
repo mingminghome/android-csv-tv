@@ -196,6 +196,12 @@ class MainFragment : BrowseSupportFragment() {
         val title = video.title?.trim() ?: ""
         Log.d("MainFragment", "Video clicked: title=$title, url=$url")
 
+        if ((url.startsWith("http://") || url.startsWith("https://") || url.startsWith("rtmp://")) &&
+            (activity as? MainActivity)?.pip?.focusExisting(url) == true
+        ) {
+            return
+        }
+
         when {
             url.equals("browser", ignoreCase = true) -> {
                 if (!beginCardOpen(video)) return
@@ -221,7 +227,9 @@ class MainFragment : BrowseSupportFragment() {
                 return
             }
             url.equals("settings", ignoreCase = true) || title.equals("Settings", ignoreCase = true) -> {
-                // Pop all fragments from the back stack to destroy any open WebView or PlaybackFragment.
+                // Release any stage or corner before leaving, including a window that
+                // is not on the back stack.
+                (activity as? MainActivity)?.pip?.closeAll()
                 parentFragmentManager.popBackStack(null, FragmentManager.POP_BACK_STACK_INCLUSIVE)
 
                 // Settings mode (CSV already configured when user is on main browse).
@@ -235,7 +243,7 @@ class MainFragment : BrowseSupportFragment() {
                 if (!beginCardOpen(video)) return
                 Log.d("MainFragment", "Opening PlaybackFragment directly for RTMP URL: $url")
                 Utils.incrementWatchCount(requireContext(), url)
-                openPlaybackFragment(url)
+                openPlaybackFragment(url, title = title, catalogUrl = url)
                 return
             }
             else -> {
@@ -262,20 +270,28 @@ class MainFragment : BrowseSupportFragment() {
                             )
                             if (preferNativePlayer) {
                                 Log.d("MainFragment", "Opening PlaybackFragment for resolved URL: $resolvedUrl, Content-Type: $contentType")
-                                openPlaybackFragment(resolvedUrl, contentType)
+                                openPlaybackFragment(resolvedUrl, contentType, title, catalogUrl = url)
                             } else {
                                 Log.d("MainFragment", "Opening WebViewFragment for resolved URL: $resolvedUrl")
-                                openWebViewFragment(resolvedUrl, skipNativeHandoff = Utils.isHtmlContentType(contentType))
+                                openWebViewFragment(
+                                    resolvedUrl,
+                                    skipNativeHandoff = Utils.isHtmlContentType(contentType),
+                                    catalogUrl = url
+                                )
                             }
                         } else {
                             Log.w("MainFragment", "Failed to resolve URL: $url, error: $error, preferNative=$preferNativePlayer")
                             Utils.incrementWatchCount(requireContext(), url)
                             if (preferNativePlayer) {
                                 Log.d("MainFragment", "Opening PlaybackFragment for URL despite error: $finalUrlToOpen")
-                                openPlaybackFragment(finalUrlToOpen, contentType)
+                                openPlaybackFragment(finalUrlToOpen, contentType, title, catalogUrl = url)
                             } else {
                                 Log.d("MainFragment", "Opening WebViewFragment for URL: $finalUrlToOpen")
-                                openWebViewFragment(finalUrlToOpen, skipNativeHandoff = Utils.isHtmlContentType(contentType))
+                                openWebViewFragment(
+                                    finalUrlToOpen,
+                                    skipNativeHandoff = Utils.isHtmlContentType(contentType),
+                                    catalogUrl = url
+                                )
                             }
                         }
                     }
@@ -340,41 +356,80 @@ class MainFragment : BrowseSupportFragment() {
         }
     }
 
-    private fun openPlaybackFragment(url: String, mimeType: String? = null) {
+    private fun openPlaybackFragment(
+        url: String,
+        mimeType: String? = null,
+        title: String? = null,
+        catalogUrl: String? = null
+    ) {
         val fragment = PlaybackFragment().apply {
             arguments = Bundle().apply {
                 putString("video_url", url)
                 putString("mime_type", mimeType)
+                if (!title.isNullOrBlank()) putString("video_title", title)
+                if (!catalogUrl.isNullOrBlank()) putString("catalog_url", catalogUrl)
             }
         }
-        parentFragmentManager.beginTransaction()
-            .replace(R.id.fragment_container, fragment)
-            .addToBackStack(null)
-            .commit()
-        leftForPlayer = true
+        openOnStage(fragment)
     }
 
     private fun openWebViewFragment(
         url: String,
         isBrowserCard: Boolean = false,
-        skipNativeHandoff: Boolean = false
+        skipNativeHandoff: Boolean = false,
+        catalogUrl: String? = null
     ) {
-        parentFragmentManager.beginTransaction()
-            .replace(
-                R.id.fragment_container,
-                WebViewFragment.create(url, isBrowserCard, skipNativeHandoff)
-            )
-            .addToBackStack(null)
-            .commit()
-        leftForPlayer = true
+        openOnStage(WebViewFragment.create(url, isBrowserCard, skipNativeHandoff, catalogUrl))
+    }
+
+    private fun openOnStage(fragment: androidx.fragment.app.Fragment) {
+        val controller = (activity as? MainActivity)?.pip
+        if (controller == null) {
+            parentFragmentManager.beginTransaction()
+                .replace(R.id.fragment_container, fragment)
+                .addToBackStack(null)
+                .commit()
+            leftForPlayer = true
+            return
+        }
+        if (controller.openStage(fragment)) leftForPlayer = true else clearCardOpen()
+    }
+
+    /** PiP cancelled a second open. Drop the card spinner. */
+    fun clearOpeningCard() {
+        clearCardOpen()
+    }
+
+    fun pauseCatalogNetworkForPip() {
+        if (!catalogNetworkPaused) pauseCatalogNetworkWork()
+    }
+
+    fun resumeCatalogNetworkForPip() {
+        if (isHidden || !catalogNetworkPaused) return
+        resumeCatalogNetworkWork()
+    }
+
+    override fun onHiddenChanged(hidden: Boolean) {
+        super.onHiddenChanged(hidden)
+        if (hidden) {
+            pauseCatalogNetworkWork()
+            return
+        }
+        if (leftForPlayer) clearCardOpen()
+        if (mediaBesideBrowse()) pauseCatalogNetworkWork() else resumeCatalogNetworkWork()
+    }
+
+    private fun mediaBesideBrowse(): Boolean {
+        val model = (activity as? MainActivity)?.pip?.model ?: return false
+        return model.corner != PipPolicy.Kind.NONE || model.stage != PipPolicy.Kind.NONE
     }
 
     override fun onResume() {
         super.onResume()
-        if (leftForPlayer) {
+        if (leftForPlayer && !isHidden) {
             clearCardOpen()
         }
-        resumeCatalogNetworkWork()
+        if (isHidden || mediaBesideBrowse()) pauseCatalogNetworkWork() else resumeCatalogNetworkWork()
     }
 
     override fun onPause() {

@@ -6,17 +6,22 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
+import android.view.KeyEvent
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.graphics.PorterDuff
+import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.ProgressBar
 import android.widget.RelativeLayout
 import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.fragment.app.Fragment
+import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
@@ -26,6 +31,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.rtmp.RtmpDataSource
+import androidx.media3.exoplayer.DefaultLivePlaybackSpeedControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.hls.playlist.DefaultHlsPlaylistTracker
@@ -42,7 +48,7 @@ import javax.net.ssl.TrustManager
 import javax.net.ssl.X509TrustManager
 
 @UnstableApi
-class PlaybackFragment : Fragment() {
+class PlaybackFragment : Fragment(), PipSurface {
     private var player: ExoPlayer? = null
     private var loadingIndicator: ProgressBar? = null
     private var playerView: PlayerView? = null
@@ -86,14 +92,19 @@ class PlaybackFragment : Fragment() {
      */
     private val hlsPlaylistStuckCoefficient = 7.0
 
-    // Defaults; re-tuned at runtime from device RAM (4K buffers of 60–120s OOM Fire TV sticks)
-    private var minBufferMs = 20000
-    private var maxBufferMs = 45000
-    private var bufferForPlaybackMs = 2500
-    private var bufferForPlaybackAfterRebufferMs = 5000
-    private var targetBufferBytes = 32 * 1024 * 1024
+    // Device ceiling. The active cushion lives in [bufferLevel] and can grow without
+    // reconnecting. Byte caps stay well under a 4K×2min buffer, which OOM-kills Fire TV sticks.
+    private var bufferLimits: PlaybackBufferPolicy.Limits =
+        PlaybackBufferPolicy.limitsFor(totalMb = 4096, lowRam = false)
+    private var bufferLevel = PlaybackBufferPolicy.startLevel
+    private var dynamicLoadControl: DynamicLoadControl? = null
     private var isLowRamDevice = false
     private var isEmulator = false
+    private var inCorner = false
+    private var pipButton: ImageButton? = null
+    private var audible = true
+    private var decoderCapped = false
+    private var backCallback: OnBackPressedCallback? = null
 
     private var isFirstFrameRendered = false
     private var isStallRestarting = false
@@ -103,21 +114,25 @@ class PlaybackFragment : Fragment() {
     private var consecutiveStallRestarts = 0
     private val maxStallRestartsBeforeFullReinit = 2
 
-    // Stall detector: recovers when video freezes or buffers infinitely.
-    // Balanced middle: reconnect faster than the old ~20s wait, but avoid thrashing on
-    // live-edge micro-freezes (separate counters + stricter frozen criteria).
+    // Stall detector: a frozen decoder still reconnects. Buffering does not, while the
+    // buffer is growing or already holds a playable stretch — that reconnect was the
+    // 10s-play / 10s-buffer / reload loop. See [PlaybackBufferPolicy].
     private var lastVideoPosition: Long = 0
-    private var bufferingStallChecks = 0
     private var frozenStallChecks = 0
     private var didShowBufferingHint = false
     private val STALL_CHECK_INTERVAL_MS = 2000L
-    /** ~10s continuous BUFFERING before soft reconnect. */
-    private val BUFFERING_STALL_THRESHOLD = 5
     /** ~14s true freeze (not live-edge jitter) before full reinit. */
     private val FROZEN_STALL_THRESHOLD = 7
     /** Show soft "Buffering…" after ~4s so the UI does not look dead. */
-    private val BUFFERING_STATUS_HINT_AFTER = 2
+    private val BUFFERING_STATUS_HINT_AFTER_MS = 4_000L
+    private var bufferingEpisodeStartMs = 0L
+    private var lastBufferedEndMs = 0L
+    private var lastBufferGrowthMs = 0L
+    private var steppedThisBuffering = false
+    private var readySinceMs = 0L
+    private var playedBeforeBufferingMs = 0L
     private val stallCheckRunnable = Runnable { checkForVideoStall() }
+    private val bufferStepDownRunnable = Runnable { stepBufferDownIfStable() }
 
     companion object {
         private const val TAG = "PlaybackFragment"
@@ -164,28 +179,38 @@ class PlaybackFragment : Fragment() {
         playerView?.useController = false
         playerView?.keepScreenOn = true
 
-        // Single Back → previous surface (WebView session if handed off from a page,
-        // otherwise main browse). Do not require hiding controller first.
-        requireActivity().onBackPressedDispatcher.addCallback(
-            viewLifecycleOwner,
-            object : OnBackPressedCallback(true) {
-                override fun handleOnBackPressed() {
-                    if (!isAdded) return
-                    try {
-                        if (parentFragmentManager.backStackEntryCount > 0 &&
-                            !parentFragmentManager.isStateSaved
-                        ) {
-                            parentFragmentManager.popBackStack()
-                        } else {
-                            isEnabled = false
-                            requireActivity().onBackPressedDispatcher.onBackPressed()
-                        }
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Back navigation failed", e)
-                    }
+        pipButton = view.findViewById(R.id.btn_pip)
+        pipButton?.setOnClickListener {
+            (activity as? MainActivity)?.pip?.minimizeIfStage(this)
+        }
+        syncPipButton()
+        // Space is play/pause from a keyboard. Arrows and Enter reach Media3
+        // once this view has focus, and that is what shows the control bar.
+        playerView?.setOnKeyListener { _, keyCode, event ->
+            if (event.action != KeyEvent.ACTION_DOWN || inCorner) return@setOnKeyListener false
+            if (keyCode != KeyEvent.KEYCODE_SPACE && keyCode != KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE) {
+                return@setOnKeyListener false
+            }
+            val playing = player ?: return@setOnKeyListener false
+            playing.playWhenReady = !playing.playWhenReady
+            playerView?.showController()
+            true
+        }
+
+        // Back leaves this surface. The activity owns corner Back, so this stays
+        // disabled while the window is small.
+        val callback = object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (!isAdded || inCorner) return
+                try {
+                    leaveStage()
+                } catch (e: Exception) {
+                    Log.w(TAG, "Back navigation failed", e)
                 }
             }
-        )
+        }
+        backCallback = callback
+        requireActivity().onBackPressedDispatcher.addCallback(viewLifecycleOwner, callback)
 
         configureBuffersForDevice()
         isEmulator = isRunningOnEmulator()
@@ -209,7 +234,7 @@ class PlaybackFragment : Fragment() {
 
     /**
      * 4K@15Mbps * 120s ≈ 225MB of buffered media — enough to LMK-kill Fire TV sticks.
-     * Cap time and absolute bytes based on total RAM.
+     * [PlaybackBufferPolicy] caps time and bytes from total RAM, then grows inside that cap.
      */
     private fun configureBuffersForDevice() {
         val am = requireContext().getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
@@ -217,32 +242,14 @@ class PlaybackFragment : Fragment() {
         am.getMemoryInfo(memInfo)
         val totalMb = memInfo.totalMem / (1024 * 1024)
         isLowRamDevice = am.isLowRamDevice || totalMb < 2800
-
-        if (isLowRamDevice) {
-            // Fire TV Stick / Plus class devices
-            minBufferMs = 12000
-            maxBufferMs = 28000
-            bufferForPlaybackMs = 2000
-            bufferForPlaybackAfterRebufferMs = 4000
-            targetBufferBytes = 18 * 1024 * 1024
-        } else if (totalMb < 4096) {
-            minBufferMs = 18000
-            maxBufferMs = 40000
-            bufferForPlaybackMs = 2500
-            bufferForPlaybackAfterRebufferMs = 5000
-            targetBufferBytes = 28 * 1024 * 1024
-        } else {
-            minBufferMs = 25000
-            maxBufferMs = 55000
-            bufferForPlaybackMs = 3000
-            bufferForPlaybackAfterRebufferMs = 6000
-            targetBufferBytes = 48 * 1024 * 1024
-        }
+        bufferLimits = PlaybackBufferPolicy.limitsFor(totalMb, isLowRamDevice)
+        val profile = currentBufferProfile()
 
         Log.i(
             TAG,
-            "Buffer config: totalRam=${totalMb}MB lowRam=$isLowRamDevice " +
-                "min=${minBufferMs}ms max=${maxBufferMs}ms targetBytes=${targetBufferBytes / (1024 * 1024)}MB"
+            "Buffer config: totalRam=${totalMb}MB lowRam=$isLowRamDevice level=$bufferLevel " +
+                "min=${profile.minBufferMs}ms max=${profile.maxBufferMs}ms " +
+                "rebuffer=${profile.rebufferMs}ms targetBytes=${profile.targetBytes / (1024 * 1024)}MB"
         )
     }
 
@@ -285,20 +292,31 @@ class PlaybackFragment : Fragment() {
 
         releasePlayerSafely()
 
+        val profile = currentBufferProfile()
+        val control = dynamicLoadControl ?: DynamicLoadControl(profile).also { dynamicLoadControl = it }
+        control.apply(profile)
         val session = AppPlayer.create(
             context = requireContext(),
             buffers = AppPlayer.Buffers(
-                minMs = minBufferMs,
-                maxMs = maxBufferMs,
-                playbackMs = bufferForPlaybackMs,
-                rebufferMs = bufferForPlaybackAfterRebufferMs,
-                targetBytes = targetBufferBytes,
+                minMs = profile.minBufferMs,
+                maxMs = profile.maxBufferMs,
+                playbackMs = profile.playbackMs,
+                rebufferMs = profile.rebufferMs,
+                targetBytes = profile.targetBytes,
                 prioritizeTimeOverSize = false
             ),
             preferSoftware = decoderMode == DECODER_MODE_SOFTWARE,
-            dropEmulatorCodecs = excludeEmulatorDecoders
+            dropEmulatorCodecs = excludeEmulatorDecoders,
+            loadControl = control,
+            liveSpeedControl = DefaultLivePlaybackSpeedControl.Builder()
+                // Each rebuffer pushes the live target back so the next stretch has room.
+                .setTargetLiveOffsetIncrementOnRebufferMs(4_000L)
+                .setFallbackMinPlaybackSpeed(0.98f)
+                .setFallbackMaxPlaybackSpeed(1.02f)
+                .build()
         )
         trackSelector = session.trackSelector
+        if (decoderCapped) capDecoder()
         player = session.player.apply {
 
                 val mimeType = arguments?.getString("mime_type")
@@ -313,14 +331,7 @@ class PlaybackFragment : Fragment() {
                             setMimeType(mimeType)
                         }
                     }
-                    .setLiveConfiguration(
-                        MediaItem.LiveConfiguration.Builder()
-                            // Slightly larger target offset reduces decoder thrash on jittery 4K live
-                            .setTargetOffsetMs(if (isLowRamDevice) 5000 else 4000)
-                            .setMaxPlaybackSpeed(1.02f)
-                            .setMinPlaybackSpeed(0.98f)
-                            .build()
-                    )
+                    .setLiveConfiguration(liveConfiguration())
                     .setMediaMetadata(MediaMetadata.Builder().setTitle("Video Stream").build())
                     .build()
                 this@PlaybackFragment.currentMediaItem = mediaItem
@@ -364,6 +375,7 @@ class PlaybackFragment : Fragment() {
                                 // change left long rebuffers (60s+) without auto-reconnect until
                                 // OkHttp finally threw SocketTimeoutException.
                                 if (isFirstFrameRendered && !isShowingFatalError) {
+                                    noteBufferingEpisode(player?.bufferedPosition ?: 0L)
                                     ensureStallDetectionRunning()
                                 }
                             }
@@ -377,6 +389,10 @@ class PlaybackFragment : Fragment() {
                                 // Only clear retry budgets after stable play — READY+one-frame+ENDED
                                 // must not reset counters (that loop never exhausts maxLiveRecovers).
                                 scheduleStablePlaybackCredit()
+
+                                endBufferingEpisode()
+                                readySinceMs = SystemClock.elapsedRealtime()
+                                scheduleBufferStepDown()
 
                                 if (!wasStallRestarting) {
                                     loadingIndicator?.animate()?.alpha(0f)?.setDuration(200)?.withEndAction {
@@ -398,11 +414,16 @@ class PlaybackFragment : Fragment() {
                                     playerView?.alpha = 1f
                                 }
 
-                                // Re-assert audible output every time we become READY (after recoveries).
-                                volume = 1f
-                                playerView?.useController = true
+                                // Re-assert the stage/corner mix. A corner stays at volume 0.
+                                applyAudibleToPlayer()
+                                playerView?.useController = !inCorner
+                                if (inCorner) {
+                                    playerView?.hideController()
+                                } else {
+                                    playerView?.requestFocus()
+                                }
                                 playWhenReady = true
-                                Log.d(TAG, "Playback state changed: READY volume=$volume muted=$isDeviceMuted")
+                                Log.d(TAG, "Playback state changed: READY volume=${player?.volume} corner=$inCorner")
 
                                 if (isFirstFrameRendered && player?.videoFormat != null) {
                                     startStallDetection()
@@ -448,7 +469,7 @@ class PlaybackFragment : Fragment() {
                                     playerView?.visibility = View.VISIBLE
                                     playerView?.alpha = 1f
                                 }
-                                playerView?.useController = true
+                                playerView?.useController = !inCorner
                                 Log.d(TAG, "Playback state changed: ENDED")
 
                                 // IPTV/live HLS often hits ENDED after a stuck playlist or a short
@@ -473,7 +494,7 @@ class PlaybackFragment : Fragment() {
                                     playerView?.visibility = View.VISIBLE
                                     playerView?.alpha = 1f
                                 }
-                                playerView?.useController = true
+                                playerView?.useController = !inCorner
                                 Log.d(TAG, "Playback state changed: IDLE")
                             }
                         }
@@ -502,6 +523,21 @@ class PlaybackFragment : Fragment() {
                                 "decoderMode=$decoderMode msg=${error.message}",
                             error
                         )
+
+                        if (isVideoError && inCorner) {
+                            Log.w(TAG, "Corner decoder failed; closing the small window")
+                            context?.let {
+                                Toast.makeText(
+                                    it,
+                                    "Couldn't play the small window on this device.",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                            releasePlayerSafely()
+                            player = null
+                            if (isAdded) leaveStage()
+                            return
+                        }
 
                         if (isVideoError) {
                             if (usedEmulatorCodec) {
@@ -561,9 +597,7 @@ class PlaybackFragment : Fragment() {
                             player = null
 
                             handler.postDelayed({
-                                if (isAdded && !isDetached) {
-                                    parentFragmentManager.popBackStack()
-                                }
+                                if (isAdded && !isDetached) leaveStage()
                             }, 6000L)
                             return
                         }
@@ -604,9 +638,7 @@ class PlaybackFragment : Fragment() {
                             player = null
 
                             handler.postDelayed({
-                                if (isAdded && !isDetached) {
-                                    parentFragmentManager.popBackStack()
-                                }
+                                if (isAdded && !isDetached) leaveStage()
                             }, 6000L)
                         }
                     }
@@ -723,9 +755,7 @@ class PlaybackFragment : Fragment() {
             releasePlayerSafely()
             player = null
             handler.postDelayed({
-                if (isAdded && !isDetached) {
-                    parentFragmentManager.popBackStack()
-                }
+                if (isAdded && !isDetached) leaveStage()
             }, 6000L)
             return
         }
@@ -758,11 +788,18 @@ class PlaybackFragment : Fragment() {
         handler.removeCallbacks(stablePlaybackCreditRunnable)
         releasePlayerSafely()
         player = null
+        if (inCorner) {
+            if (isAdded) leaveStage()
+            return
+        }
+        val page = WebViewFragment.create(url, skipNativeHandoff = true)
+        val pip = (activity as? MainActivity)?.pip
+        if (pip != null) {
+            pip.swapStage(this, page)
+            return
+        }
         parentFragmentManager.beginTransaction()
-            .replace(
-                R.id.fragment_container,
-                WebViewFragment.create(url, skipNativeHandoff = true)
-            )
+            .replace(R.id.fragment_container, page)
             .commitAllowingStateLoss()
     }
 
@@ -1086,13 +1123,7 @@ class PlaybackFragment : Fragment() {
                         setMimeType(mimeType)
                     }
                 }
-                .setLiveConfiguration(
-                    MediaItem.LiveConfiguration.Builder()
-                        .setTargetOffsetMs(if (isLowRamDevice) 5000 else 4000)
-                        .setMaxPlaybackSpeed(1.02f)
-                        .setMinPlaybackSpeed(0.98f)
-                        .build()
-                )
+                .setLiveConfiguration(liveConfiguration())
                 .setMediaMetadata(MediaMetadata.Builder().setTitle("Video Stream").build())
                 .build()
             currentMediaItem = mediaItem
@@ -1228,6 +1259,7 @@ class PlaybackFragment : Fragment() {
     override fun onStop() {
         super.onStop()
         handler.removeCallbacks(stallCheckRunnable)
+        handler.removeCallbacks(bufferStepDownRunnable)
         player?.let {
             // No paused keep-alive: drop live streams cleanly; only keep VOD offset for resume.
             playbackPosition = if (it.isCurrentMediaItemLive) 0L else it.currentPosition
@@ -1271,10 +1303,159 @@ class PlaybackFragment : Fragment() {
         Log.d(TAG, "onDestroyView: Player released and views nullified")
     }
 
+    override val pipKind: PipPolicy.Kind get() = PipPolicy.Kind.PLAYER
+
+    fun isLowRam(): Boolean = isLowRamDevice
+
+    override fun setCorner(corner: Boolean) {
+        backCallback?.isEnabled = !corner
+        if (inCorner == corner) return
+        inCorner = corner
+        val root = view
+        if (root is ViewGroup) {
+            root.descendantFocusability = if (corner) {
+                ViewGroup.FOCUS_BLOCK_DESCENDANTS
+            } else {
+                ViewGroup.FOCUS_AFTER_DESCENDANTS
+            }
+        }
+        root?.isFocusable = false
+        if (corner) {
+            root?.clearFocus()
+        } else {
+            playerView?.isFocusable = true
+            playerView?.requestFocus()
+        }
+        playerView?.useController = !corner
+        if (corner) playerView?.hideController()
+        syncPipButton()
+        applyAudibleToPlayer()
+    }
+
+    /** Touch devices get a Minimize icon. A television uses the Menu bar. */
+    private fun syncPipButton() {
+        val handheld = context?.let { DeviceProfile.isHandheld(it) } == true
+        pipButton?.visibility = if (handheld && !inCorner) View.VISIBLE else View.GONE
+    }
+
+    override fun setAudible(audible: Boolean) {
+        this.audible = audible
+        applyAudibleToPlayer()
+    }
+
+    override fun capDecoder() {
+        if (decoderCapped) return
+        // A picture that is already on screen must keep its track. Forcing 720p
+        // with no smaller variant reloads the player as audio-only or black.
+        if (isFirstFrameRendered || player?.videoFormat != null) return
+        decoderCapped = true
+        val selector = trackSelector ?: return
+        selector.parameters = selector.parameters.buildUpon()
+            .setMaxVideoSize(1280, 720)
+            .setExceedVideoConstraintsIfNecessary(true)
+            .build()
+    }
+
+    override fun pipLabel(): String {
+        val title = arguments?.getString("video_title")?.takeIf { it.isNotBlank() }
+        if (title != null) return title
+        val url = arguments?.getString("video_url").orEmpty()
+        val leaf = url.substringAfterLast('/').substringBefore('?')
+        return leaf.ifBlank { "Video" }.take(48)
+    }
+
+    private fun applyAudibleToPlayer() {
+        val p = player ?: return
+        val audio = AudioAttributes.Builder()
+            .setUsage(C.USAGE_MEDIA)
+            .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+            .build()
+        p.setAudioAttributes(audio, audible)
+        p.volume = if (audible) 1f else 0f
+    }
+
     private fun resetStallCounters() {
-        bufferingStallChecks = 0
         frozenStallChecks = 0
         didShowBufferingHint = false
+        endBufferingEpisode()
+    }
+
+    private fun currentBufferProfile(): PlaybackBufferPolicy.Profile =
+        PlaybackBufferPolicy.profile(bufferLevel, bufferLimits)
+
+    /**
+     * Live target can move back on each rebuffer up to the device ceiling without a reload.
+     * The speed control adds 4s per underrun inside this range.
+     */
+    private fun liveConfiguration(): MediaItem.LiveConfiguration {
+        val profile = currentBufferProfile()
+        val maxOffset = bufferLimits.ceilingMaxMs.coerceAtLeast(profile.liveOffsetMs)
+        val minOffset = (profile.liveOffsetMs / 2).coerceIn(2_000, profile.liveOffsetMs)
+        return MediaItem.LiveConfiguration.Builder()
+            .setTargetOffsetMs(profile.liveOffsetMs.toLong())
+            .setMinOffsetMs(minOffset.toLong())
+            .setMaxOffsetMs(maxOffset.toLong())
+            .setMaxPlaybackSpeed(1.02f)
+            .setMinPlaybackSpeed(0.98f)
+            .build()
+    }
+
+    private fun noteBufferingEpisode(bufferedEndMs: Long) {
+        if (bufferingEpisodeStartMs != 0L) return
+        val now = SystemClock.elapsedRealtime()
+        bufferingEpisodeStartMs = now
+        lastBufferGrowthMs = now
+        lastBufferedEndMs = bufferedEndMs
+        playedBeforeBufferingMs = if (readySinceMs > 0L) now - readySinceMs else 0L
+        steppedThisBuffering = false
+        handler.removeCallbacks(bufferStepDownRunnable)
+    }
+
+    private fun endBufferingEpisode() {
+        bufferingEpisodeStartMs = 0L
+        steppedThisBuffering = false
+    }
+
+    private fun scheduleBufferStepDown() {
+        handler.removeCallbacks(bufferStepDownRunnable)
+        if (bufferLevel > PlaybackBufferPolicy.startLevel) {
+            handler.postDelayed(bufferStepDownRunnable, PlaybackBufferPolicy.stableAfterMs)
+        }
+    }
+
+    private fun stepBufferDownIfStable() {
+        val p = player ?: return
+        if (!isAdded || isShowingFatalError) return
+        if (p.playbackState != Player.STATE_READY || !p.playWhenReady) return
+        if (bufferLevel <= PlaybackBufferPolicy.startLevel) return
+        bufferLevel = PlaybackBufferPolicy.afterStable(bufferLevel)
+        val profile = currentBufferProfile()
+        dynamicLoadControl?.apply(profile)
+        Log.i(
+            TAG,
+            "Dynamic buffer step down to $bufferLevel rebuffer=${profile.rebufferMs}ms " +
+                "max=${profile.maxBufferMs}ms"
+        )
+        scheduleBufferStepDown()
+    }
+
+    private fun stepBufferUp() {
+        val newLevel = PlaybackBufferPolicy.afterUnderrun(bufferLevel, playedBeforeBufferingMs)
+        if (newLevel == bufferLevel) {
+            steppedThisBuffering = true
+            return
+        }
+        bufferLevel = newLevel
+        steppedThisBuffering = true
+        val profile = currentBufferProfile()
+        dynamicLoadControl?.apply(profile)
+        showStatus("Building a larger buffer…")
+        Log.i(
+            TAG,
+            "Dynamic buffer step up to $bufferLevel after ${playedBeforeBufferingMs}ms of playback " +
+                "rebuffer=${profile.rebufferMs}ms max=${profile.maxBufferMs}ms " +
+                "bytes=${profile.targetBytes / (1024 * 1024)}MB"
+        )
     }
 
     private fun startStallDetection() {
@@ -1310,27 +1491,54 @@ class PlaybackFragment : Fragment() {
         if (state == Player.STATE_BUFFERING) {
             // Do not carry frozen ticks into buffering — separate failure modes.
             frozenStallChecks = 0
-            bufferingStallChecks++
+            val now = SystemClock.elapsedRealtime()
+            noteBufferingEpisode(p.bufferedPosition)
+            val bufferedEnd = p.bufferedPosition
+            if (bufferedEnd > lastBufferedEndMs + 250L) {
+                lastBufferedEndMs = bufferedEnd
+                lastBufferGrowthMs = now
+            }
+            val ahead = (bufferedEnd - currentPos).coerceAtLeast(0L)
+            val profile = currentBufferProfile()
+            val action = PlaybackBufferPolicy.onBufferingTick(
+                PlaybackBufferPolicy.BufferingTick(
+                    level = bufferLevel,
+                    profile = profile,
+                    bufferingForMs = now - bufferingEpisodeStartMs,
+                    stuckForMs = now - lastBufferGrowthMs,
+                    bufferedAheadMs = ahead,
+                    steppedThisEpisode = steppedThisBuffering
+                )
+            )
             Log.d(
                 TAG,
-                "Stall check: buffering ($bufferingStallChecks/$BUFFERING_STALL_THRESHOLD)"
+                "Buffer tick: $action level=$bufferLevel ahead=${ahead}ms " +
+                    "stuck=${now - lastBufferGrowthMs}ms target=${profile.rebufferMs}ms"
             )
-            if (!didShowBufferingHint &&
-                bufferingStallChecks >= BUFFERING_STATUS_HINT_AFTER &&
-                !isShowingStatus
-            ) {
-                didShowBufferingHint = true
-                showStatus("Buffering…")
-            }
-            if (bufferingStallChecks >= BUFFERING_STALL_THRESHOLD) {
-                Log.w(TAG, "Video stalled (buffering timeout). Restarting player.")
-                showStatus("Stream stalled — reconnecting…")
-                // Soft re-prepare first; full re-init after repeated stalls (restartPlayer counts).
-                restartPlayer(fullReinit = consecutiveStallRestarts >= 1)
-                return
+            when (action) {
+                PlaybackBufferPolicy.BufferingAction.STEP_UP -> stepBufferUp()
+                PlaybackBufferPolicy.BufferingAction.RESUME -> {
+                    dynamicLoadControl?.relaxResumeTo(ahead)
+                    Log.i(TAG, "Resuming with ${ahead}ms buffered — source stopped extending the buffer")
+                }
+                PlaybackBufferPolicy.BufferingAction.RECONNECT -> {
+                    Log.w(TAG, "Video stalled (buffer not growing). Restarting player.")
+                    showStatus("Stream stalled — reconnecting…")
+                    restartPlayer(fullReinit = consecutiveStallRestarts >= 1)
+                    return
+                }
+                PlaybackBufferPolicy.BufferingAction.WAIT -> {
+                    if (!didShowBufferingHint &&
+                        now - bufferingEpisodeStartMs >= BUFFERING_STATUS_HINT_AFTER_MS &&
+                        !isShowingStatus
+                    ) {
+                        didShowBufferingHint = true
+                        showStatus("Buffering…")
+                    }
+                }
             }
         } else if (state == Player.STATE_READY) {
-            bufferingStallChecks = 0
+            endBufferingEpisode()
             didShowBufferingHint = false
             val advanced = currentPos - lastVideoPosition
             // Live edge often reports a fixed position while frames still advance.

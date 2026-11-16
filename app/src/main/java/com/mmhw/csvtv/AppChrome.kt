@@ -4,7 +4,9 @@ import android.app.Activity
 import android.view.View
 import android.view.WindowManager
 import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 
 /**
  * Shared activity chrome for Settings, Send, Receive, and Main:
@@ -34,5 +36,22 @@ object AppChrome {
 
     fun requestInsets(activity: Activity) {
         ViewCompat.requestApplyInsets(activity.findViewById(android.R.id.content))
+    }
+
+    /**
+     * Phone playback draws edge to edge. A swipe shows the bars briefly.
+     * The catalog keeps the status bar.
+     */
+    fun setPlaybackFullscreen(activity: Activity, fullscreen: Boolean) {
+        WindowCompat.setDecorFitsSystemWindows(activity.window, !fullscreen)
+        val controller = WindowInsetsControllerCompat(activity.window, activity.window.decorView)
+        if (fullscreen) {
+            controller.hide(WindowInsetsCompat.Type.systemBars())
+            controller.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        } else {
+            controller.show(WindowInsetsCompat.Type.systemBars())
+        }
+        ViewCompat.requestApplyInsets(activity.window.decorView)
     }
 }

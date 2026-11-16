@@ -162,4 +162,20 @@
         </LinearLayout>
     </LinearLayout>
 
+    <!-- Phone only. Kept off the toolbar so the existing buttons still fit. -->
+    <ImageButton
+        android:id="@+id/btn_web_pip"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:layout_gravity="top|end"
+        android:layout_marginTop="72dp"
+        android:layout_marginEnd="16dp"
+        android:background="@drawable/pip_speaker_bg"
+        android:contentDescription="Minimize"
+        android:elevation="8dp"
+        android:padding="12dp"
+        android:scaleType="centerInside"
+        android:src="@drawable/ic_pip"
+        android:visibility="gone" />
+
 </FrameLayout>

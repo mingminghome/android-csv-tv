@@ -9,6 +9,8 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.LivePlaybackSpeedControl
+import androidx.media3.exoplayer.LoadControl
 import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.exoplayer.mediacodec.MediaCodecUtil
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
@@ -37,7 +39,9 @@ object AppPlayer {
         context: Context,
         buffers: Buffers,
         preferSoftware: Boolean = false,
-        dropEmulatorCodecs: Boolean = false
+        dropEmulatorCodecs: Boolean = false,
+        loadControl: LoadControl? = null,
+        liveSpeedControl: LivePlaybackSpeedControl? = null
     ): Session {
         val trackSelector = DefaultTrackSelector(context).apply {
             parameters = buildUponParameters()
@@ -63,7 +67,7 @@ object AppPlayer {
             .setEnableDecoderFallback(true)
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
         logFfmpegOnce()
-        val loadControl = DefaultLoadControl.Builder()
+        val resolvedLoadControl = loadControl ?: DefaultLoadControl.Builder()
             .setBufferDurationsMs(
                 buffers.minMs,
                 buffers.maxMs,
@@ -75,11 +79,14 @@ object AppPlayer {
             }
             .setPrioritizeTimeOverSizeThresholds(buffers.prioritizeTimeOverSize)
             .build()
-        val player = ExoPlayer.Builder(context)
+        val playerBuilder = ExoPlayer.Builder(context)
             .setRenderersFactory(renderers)
             .setTrackSelector(trackSelector)
-            .setLoadControl(loadControl)
-            .build()
+            .setLoadControl(resolvedLoadControl)
+        if (liveSpeedControl != null) {
+            playerBuilder.setLivePlaybackSpeedControl(liveSpeedControl)
+        }
+        val player = playerBuilder.build()
             .apply {
                 val audio = AudioAttributes.Builder()
                     .setUsage(C.USAGE_MEDIA)

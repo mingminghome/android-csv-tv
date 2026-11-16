@@ -36,7 +36,7 @@ import org.json.JSONObject
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 
-class WebViewFragment : Fragment() {
+class WebViewFragment : Fragment(), PipSurface {
 
     fun interface Closer {
         fun onWebViewClosed()
@@ -53,6 +53,7 @@ class WebViewFragment : Fragment() {
     private lateinit var btnWebDesktopToggle: ImageButton
     private lateinit var btnWebAutoFullscreen: ImageButton
     private lateinit var btnWebClose: ImageButton
+    private lateinit var btnWebPip: ImageButton
     private lateinit var btnWebAdblockToggle: ImageButton
     private lateinit var btnWebHome: ImageButton
     private lateinit var webToolbar: View
@@ -62,6 +63,12 @@ class WebViewFragment : Fragment() {
     private var skipNativeHandoff = false
     private var urlEditText: EditText? = null
     private var isWebViewDestroyed = false
+    private var inCorner = false
+    private var audible = true
+    private var backCallback: OnBackPressedCallback? = null
+    private val cornerScaler = View.OnLayoutChangeListener { v, _, _, _, _, _, _, _, _ ->
+        if (inCorner) scaleWebViewInto(v)
+    }
     private var isAdblockEnabled = true
     private var initialLoadCompleted = false
     private val pointerHideHandler = Handler(Looper.getMainLooper())
@@ -207,6 +214,11 @@ class WebViewFragment : Fragment() {
         updateDesktopToggleUi()
         btnWebAutoFullscreen = view.findViewById(R.id.btn_web_auto_fullscreen)
         btnWebClose = view.findViewById(R.id.btn_web_close)
+        btnWebPip = view.findViewById(R.id.btn_web_pip)
+        btnWebPip.setOnClickListener {
+            (activity as? MainActivity)?.pip?.minimizeIfStage(this)
+        }
+        syncPipButton()
         btnWebAdblockToggle = view.findViewById(R.id.btn_web_adblock_toggle)
         btnWebHome = view.findViewById(R.id.btn_web_home)
         webProgress = view.findViewById(R.id.web_progress)
@@ -219,14 +231,15 @@ class WebViewFragment : Fragment() {
         }
 
         // Align system Back with D-pad Back: FS → history → main (same as Close at root).
-        requireActivity().onBackPressedDispatcher.addCallback(
-            viewLifecycleOwner,
-            object : OnBackPressedCallback(true) {
-                override fun handleOnBackPressed() {
-                    handleBackNavigation()
-                }
+        // Disabled while this page is the corner; the activity handles that Back.
+        val callback = object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (inCorner || isHidden) return
+                handleBackNavigation()
             }
-        )
+        }
+        backCallback = callback
+        requireActivity().onBackPressedDispatcher.addCallback(viewLifecycleOwner, callback)
 
         if (isBrowserCard) {
             updateAdblockIcon()
@@ -794,15 +807,19 @@ class WebViewFragment : Fragment() {
                 customView = view
                 customViewCallback = callback
 
-                @Suppress("DEPRECATION")
-                requireActivity().window.decorView.systemUiVisibility = (
-                        View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                                or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                                or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                                or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                                or View.SYSTEM_UI_FLAG_FULLSCREEN
-                                or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-                        )
+                if (usesTvPointer()) {
+                    @Suppress("DEPRECATION")
+                    requireActivity().window.decorView.systemUiVisibility = (
+                            View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                                    or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                                    or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                                    or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                                    or View.SYSTEM_UI_FLAG_FULLSCREEN
+                                    or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                            )
+                } else {
+                    AppChrome.setPlaybackFullscreen(requireActivity(), true)
+                }
 
                 fullscreenContainer.addView(view, FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
@@ -833,8 +850,12 @@ class WebViewFragment : Fragment() {
 
                 isInFullscreen = false
 
-                @Suppress("DEPRECATION")
-                requireActivity().window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
+                if (usesTvPointer()) {
+                    @Suppress("DEPRECATION")
+                    requireActivity().window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
+                } else {
+                    (activity as? MainActivity)?.pip?.syncPlaybackFullscreen()
+                }
 
                 fullscreenContainer.visibility = View.GONE
                 container.visibility = View.VISIBLE
@@ -1181,7 +1202,7 @@ class WebViewFragment : Fragment() {
      * user does not re-do multi-step navigation from main browse.
      */
     private fun shouldAutoHandoff(streamUrl: String): Boolean {
-        if (isBrowserCard || handedOffToNativePlayer || isWebViewDestroyed) return false
+        if (inCorner || isBrowserCard || handedOffToNativePlayer || isWebViewDestroyed) return false
         if (!handoffGate.shouldAcceptSiteFullscreenRequest()) return false
         if (streamUrlsMatch(streamUrl, suppressHandoffUrl)) return false
         return true
@@ -1209,6 +1230,21 @@ class WebViewFragment : Fragment() {
             arguments = Bundle().apply {
                 putString("video_url", streamUrl)
             }
+        }
+        val pip = (activity as? MainActivity)?.pip
+        if (pip != null) {
+            try {
+                if (!pip.handoff(this, fragment)) {
+                    android.util.Log.w("WebViewFragment", "Hand-off skipped: state already saved")
+                    handedOffToNativePlayer = false
+                    setActivityOverlaysVisible(true)
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("WebViewFragment", "Hand-off failed", e)
+                handedOffToNativePlayer = false
+                setActivityOverlaysVisible(true)
+            }
+            return
         }
         val fm = parentFragmentManager
         try {
@@ -1823,10 +1859,36 @@ class WebViewFragment : Fragment() {
             closer.onWebViewClosed()
             return
         }
+        leaveStage()
+    }
+
+    private val htmlMuteGuard: Runnable = object : Runnable {
+        override fun run() {
+            if (!inCorner || audible || isWebViewDestroyed) return
+            applyHtmlAudible(false)
+            jsHandler.postDelayed(this, 2_000L)
+        }
+    }
+
+    private fun applyHtmlAudible(on: Boolean) {
+        if (isWebViewDestroyed || !::webView.isInitialized) return
+        val muted = if (on) "false" else "true"
+        val volume = if (on) "1" else "0"
         try {
-            if (!parentFragmentManager.isStateSaved) {
-                parentFragmentManager.popBackStack()
-            }
+            webView.evaluateJavascript(
+                """
+                (function() {
+                    var nodes = document.querySelectorAll('video, audio');
+                    for (var i = 0; i < nodes.length; i++) {
+                        try {
+                            nodes[i].muted = $muted;
+                            nodes[i].volume = $volume;
+                        } catch (e) {}
+                    }
+                })();
+                """.trimIndent(),
+                null
+            )
         } catch (_: Exception) {
         }
     }
@@ -2355,15 +2417,22 @@ class WebViewFragment : Fragment() {
 
     override fun onHiddenChanged(hidden: Boolean) {
         super.onHiddenChanged(hidden)
-        if (!hidden) {
-            // Shown again after PlaybackFragment pop (hide/add handoff).
-            setActivityOverlaysVisible(true)
-            onReturnedFromNativePlayer()
-        } else {
+        backCallback?.isEnabled = !hidden && !inCorner
+        if (hidden) {
+            // Real hide (native handoff). A corner page is resized, not hidden.
             setActivityOverlaysVisible(false)
             stopHtmlVideoStallMonitor()
             pauseHtmlMedia()
+            return
         }
+        if (inCorner) {
+            setActivityOverlaysVisible(false)
+            applyHtmlAudible(audible)
+            return
+        }
+        // Shown again after the native player left this page.
+        setActivityOverlaysVisible(true)
+        onReturnedFromNativePlayer()
     }
 
     override fun onStart() {
@@ -2374,6 +2443,10 @@ class WebViewFragment : Fragment() {
             webView.onResume()
         } catch (_: Exception) {
         }
+        if (inCorner) {
+            applyHtmlAudible(audible)
+            return
+        }
         // Non-browser stream pages: resume HTML5 playback + stall recovery after power/Home.
         if (!isBrowserCard) {
             tryPlayHtmlVideo()
@@ -2383,7 +2456,7 @@ class WebViewFragment : Fragment() {
 
     override fun onResume() {
         super.onResume()
-        if (isHidden) return
+        if (isHidden || inCorner) return
         if (::webView.isInitialized && !isWebViewDestroyed) {
             webView.onResume()
         }
@@ -2436,6 +2509,106 @@ class WebViewFragment : Fragment() {
         }
     }
 
+    override val pipKind: PipPolicy.Kind get() = PipPolicy.Kind.WEB
+
+    override fun setCorner(corner: Boolean) {
+        backCallback?.isEnabled = !corner && !isHidden
+        if (inCorner == corner) return
+        inCorner = corner
+        val root = view
+        if (root is ViewGroup) {
+            root.descendantFocusability = if (corner) {
+                ViewGroup.FOCUS_BLOCK_DESCENDANTS
+            } else {
+                ViewGroup.FOCUS_AFTER_DESCENDANTS
+            }
+        }
+        if (corner) {
+            stopHtmlVideoStallMonitor()
+            jsHandler.removeCallbacks(htmlMuteGuard)
+            if (::webToolbar.isInitialized) webToolbar.visibility = View.GONE
+            setActivityOverlaysVisible(false)
+            if (::webView.isInitialized && !isWebViewDestroyed) {
+                webView.isFocusable = false
+                webView.isFocusableInTouchMode = false
+                webView.clearFocus()
+            }
+            root?.clearFocus()
+            root?.addOnLayoutChangeListener(cornerScaler)
+            if (root != null) scaleWebViewInto(root)
+            applyHtmlAudible(audible)
+            if (!audible) jsHandler.postDelayed(htmlMuteGuard, 2_000L)
+        } else {
+            root?.removeOnLayoutChangeListener(cornerScaler)
+            clearWebViewScale()
+            jsHandler.removeCallbacks(htmlMuteGuard)
+            if (!isHidden) setActivityOverlaysVisible(true)
+            if (::webToolbar.isInitialized) {
+                webToolbar.visibility = if (isToolbarShowing) View.VISIBLE else View.GONE
+            }
+            applyHtmlAudible(audible)
+            if (!isHidden && !isBrowserCard) startHtmlVideoStallMonitor()
+            if (usesTvPointer() && !isHidden && ::container.isInitialized) {
+                container.requestFocus()
+            }
+        }
+        syncPipButton()
+    }
+
+    /** Touch devices get a Minimize icon. A television uses the Menu bar. */
+    private fun syncPipButton() {
+        if (!::btnWebPip.isInitialized) return
+        btnWebPip.visibility = if (!usesTvPointer() && !inCorner) View.VISIBLE else View.GONE
+    }
+
+    /** Draw the full page inside the corner instead of reflowing it into a narrow column. */
+    private fun scaleWebViewInto(root: View) {
+        if (!inCorner || !::webView.isInitialized || isWebViewDestroyed) return
+        val width = root.width
+        val height = root.height
+        if (width <= 0 || height <= 0) return
+        val fullW = resources.displayMetrics.widthPixels.coerceAtLeast(1)
+        val fullH = resources.displayMetrics.heightPixels.coerceAtLeast(1)
+        val scale = minOf(width / fullW.toFloat(), height / fullH.toFloat())
+        val lp = webView.layoutParams
+        if (lp == null || lp.width != fullW || lp.height != fullH) {
+            webView.layoutParams = FrameLayout.LayoutParams(fullW, fullH)
+        }
+        webView.pivotX = 0f
+        webView.pivotY = 0f
+        webView.scaleX = scale
+        webView.scaleY = scale
+        (root as? ViewGroup)?.clipChildren = true
+    }
+
+    private fun clearWebViewScale() {
+        if (!::webView.isInitialized || isWebViewDestroyed) return
+        webView.scaleX = 1f
+        webView.scaleY = 1f
+        webView.layoutParams = FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT
+        )
+    }
+
+    override fun setAudible(audible: Boolean) {
+        this.audible = audible
+        applyHtmlAudible(audible)
+        jsHandler.removeCallbacks(htmlMuteGuard)
+        if (inCorner && !audible) jsHandler.postDelayed(htmlMuteGuard, 2_000L)
+    }
+
+    override fun capDecoder() = Unit
+
+    override fun pipLabel(): String {
+        val pageTitle = if (::webView.isInitialized && !isWebViewDestroyed) webView.title else null
+        if (!pageTitle.isNullOrBlank() && !pageTitle.equals("about:blank", ignoreCase = true)) {
+            return pageTitle.take(48)
+        }
+        val url = arguments?.getString(ARG_URL).orEmpty().substringAfter("://")
+        return url.ifBlank { "Page" }.take(48)
+    }
+
     companion object {
         const val ARG_URL = "url"
         const val ARG_BROWSER_CARD = "is_browser_card"
@@ -2444,13 +2617,15 @@ class WebViewFragment : Fragment() {
         fun create(
             url: String,
             isBrowserCard: Boolean = false,
-            skipNativeHandoff: Boolean = false
+            skipNativeHandoff: Boolean = false,
+            catalogUrl: String? = null
         ): WebViewFragment {
             return WebViewFragment().apply {
                 arguments = Bundle().apply {
                     putString(ARG_URL, url)
                     putBoolean(ARG_BROWSER_CARD, isBrowserCard)
                     putBoolean(ARG_SKIP_NATIVE_HANDOFF, skipNativeHandoff)
+                    if (!catalogUrl.isNullOrBlank()) putString("catalog_url", catalogUrl)
                 }
             }
         }

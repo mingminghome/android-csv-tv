@@ -6,14 +6,14 @@
     android:layout_height="match_parent"
     android:background="@android:color/black">
 
-    <!-- Keep PlayerView always laid out during playback. Toggling GONE destroys the
-         surface and triggers MediaCodec reconnect + detachBuffer spam (esp. on emulator). -->
+    <!-- TextureView so a corner window can sit above another player or a page.
+         Keep this view laid out. Toggling GONE still tears the decoder down. -->
     <androidx.media3.ui.PlayerView
         android:id="@+id/player_view"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         app:use_controller="true"
-        app:surface_type="surface_view"
+        app:surface_type="texture_view"
         app:show_buffering="never"
         app:keep_content_on_player_reset="true" />
 
@@ -145,5 +145,22 @@
                 android:lineSpacingExtra="2dp" />
         </LinearLayout>
     </LinearLayout>
+
+    <!-- Phone only. The TV remote still uses the Menu bar. -->
+    <ImageButton
+        android:id="@+id/btn_pip"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:layout_alignParentTop="true"
+        android:layout_alignParentEnd="true"
+        android:layout_marginTop="16dp"
+        android:layout_marginEnd="16dp"
+        android:background="@drawable/pip_speaker_bg"
+        android:contentDescription="Minimize"
+        android:elevation="12dp"
+        android:padding="12dp"
+        android:scaleType="centerInside"
+        android:src="@drawable/ic_pip"
+        android:visibility="gone" />
 
 </RelativeLayout>
