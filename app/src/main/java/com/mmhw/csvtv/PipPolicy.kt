@@ -310,4 +310,24 @@ object PipPolicy {
         focus = Focus.STAGE,
         barIndex = 0
     )
+
+    /**
+     * Pick the fragment that should become visible when [skip] leaves the stage.
+     * Evaluates in reverse order (top of the navigation stack first) so that a
+     * stacked child (such as a WebView that launched playback) is restored before
+     * the root catalog ([fallback]).
+     */
+    fun <T> selectRevealedFragment(
+        fragments: List<T>,
+        skip: T?,
+        corner: T?,
+        isHidden: (T) -> Boolean,
+        isAdded: (T) -> Boolean,
+        fallback: T? = null
+    ): T? {
+        val candidate = fragments.lastOrNull { fragment ->
+            fragment !== skip && fragment !== corner && isHidden(fragment) && isAdded(fragment)
+        }
+        return candidate ?: fallback
+    }
 }

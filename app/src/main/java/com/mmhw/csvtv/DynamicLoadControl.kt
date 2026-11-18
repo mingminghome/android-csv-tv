@@ -51,6 +51,29 @@ class DynamicLoadControl(
         resumeOverrideUs = C.TIME_UNSET
     }
 
+    fun apply(profile: com.mmhw.csvtv.receiver.LiveBufferPolicy.Profile, targetBytes: Int = 30 * 1024 * 1024) {
+        minBufferUs = Util.msToUs(profile.minBufferMs.toLong())
+        maxBufferUs = Util.msToUs(profile.maxBufferMs.toLong())
+        playbackUs = Util.msToUs(profile.playbackMs.toLong())
+        rebufferUs = Util.msToUs(profile.rebufferMs.toLong())
+        this.targetBytes = targetBytes
+        resumeOverrideUs = C.TIME_UNSET
+    }
+
+    constructor(
+        profile: com.mmhw.csvtv.receiver.LiveBufferPolicy.Profile,
+        targetBytes: Int = 30 * 1024 * 1024
+    ) : this(
+        PlaybackBufferPolicy.Profile(
+            minBufferMs = profile.minBufferMs,
+            maxBufferMs = profile.maxBufferMs,
+            playbackMs = profile.playbackMs,
+            rebufferMs = profile.rebufferMs,
+            targetBytes = targetBytes,
+            liveOffsetMs = profile.targetOffsetMs
+        )
+    )
+
     /**
      * Resume once [bufferedAheadMs] is buffered. Used when the stepped-up target
      * cannot be filled (the source stopped extending the buffer).

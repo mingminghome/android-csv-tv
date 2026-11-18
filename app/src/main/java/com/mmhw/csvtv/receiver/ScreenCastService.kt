@@ -146,7 +146,7 @@ class ScreenCastService : Service() {
             Log.i(TAG, "live $url audio=$audioOn")
             startEncoder(proj)
             requestKeyframe()
-            handler?.postDelayed(repeatLastFrame, 400)
+            handler?.postDelayed(repeatLastFrame, 100)
             handler?.postDelayed(object : Runnable {
                 override fun run() {
                     if (!running.get()) return
@@ -186,7 +186,7 @@ class ScreenCastService : Service() {
         format.setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
         format.setInteger(MediaFormat.KEY_FRAME_RATE, 30)
         format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
-        format.setInteger(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, 1_000_000)
+        format.setInteger(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, 100_000)
         format.setInteger(
             MediaFormat.KEY_PROFILE,
             MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline
@@ -246,6 +246,7 @@ class ScreenCastService : Service() {
         retry.setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
         retry.setInteger(MediaFormat.KEY_FRAME_RATE, 30)
         retry.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+        retry.setInteger(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, 100_000)
         val enc2 = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
         enc2.configure(retry, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
         return enc2
@@ -320,14 +321,14 @@ class ScreenCastService : Service() {
             if (!running.get()) return
             val idleNs = SystemClock.elapsedRealtimeNanos() - lastVideoNs
             val au = lastKeyAu
-            if (au != null && lastVideoNs > 0L && idleNs > 400_000_000L) {
+            if (au != null && lastVideoNs > 0L && idleNs > 100_000_000L) {
                 val packets = synchronized(muxLock) {
                     tsMux.muxVideo(au, ptsUs(), true)
                 }
                 tsServer.push(packets, 0, packets.size, keyframe = true)
                 lastVideoNs = SystemClock.elapsedRealtimeNanos()
             }
-            handler?.postDelayed(this, 400)
+            handler?.postDelayed(this, 100)
         }
     }
 

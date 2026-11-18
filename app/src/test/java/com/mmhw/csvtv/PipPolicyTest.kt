@@ -207,5 +207,59 @@ class PipPolicyTest {
         )
     }
 
+    @Test
+    fun selectRevealedFragmentReturnsTopmostHiddenFragment() {
+        data class FakeFrag(val name: String, val hidden: Boolean, val added: Boolean = true)
+
+        val main = FakeFrag("main", hidden = true)
+        val web = FakeFrag("web", hidden = true)
+        val player = FakeFrag("player", hidden = false)
+
+        // Native player opened from webview: leaving player should restore webview, not main browse
+        val restoredFromWeb = PipPolicy.selectRevealedFragment(
+            fragments = listOf(main, web, player),
+            skip = player,
+            corner = null,
+            isHidden = { it.hidden },
+            isAdded = { it.added },
+            fallback = main
+        )
+        assertEquals("web", restoredFromWeb?.name)
+
+        // Leaving webview restores main browse
+        val restoredFromMain = PipPolicy.selectRevealedFragment(
+            fragments = listOf(main, web),
+            skip = web,
+            corner = null,
+            isHidden = { it.hidden },
+            isAdded = { it.added },
+            fallback = main
+        )
+        assertEquals("main", restoredFromMain?.name)
+
+        // Native player opened directly from main: leaving player restores main browse
+        val directPlayer = PipPolicy.selectRevealedFragment(
+            fragments = listOf(main, player),
+            skip = player,
+            corner = null,
+            isHidden = { it.hidden },
+            isAdded = { it.added },
+            fallback = main
+        )
+        assertEquals("main", directPlayer?.name)
+
+        // Corner window is never selected as stage reveal
+        val corner = FakeFrag("corner", hidden = true)
+        val withCorner = PipPolicy.selectRevealedFragment(
+            fragments = listOf(main, corner, player),
+            skip = player,
+            corner = corner,
+            isHidden = { it.hidden },
+            isAdded = { it.added },
+            fallback = main
+        )
+        assertEquals("main", withCorner?.name)
+    }
+
     private fun stagePlayer() = PipPolicy.Model(stage = PipPolicy.Kind.PLAYER)
 }

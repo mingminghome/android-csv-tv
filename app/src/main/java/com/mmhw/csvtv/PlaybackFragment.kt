@@ -138,6 +138,7 @@ class PlaybackFragment : Fragment(), PipSurface {
         private const val TAG = "PlaybackFragment"
         private const val DECODER_MODE_HARDWARE = 0
         private const val DECODER_MODE_SOFTWARE = 1
+        private const val FATAL_ERROR_AUTO_CLOSE_DELAY_MS = 3000L
     }
 
     override fun onCreateView(
@@ -598,7 +599,7 @@ class PlaybackFragment : Fragment(), PipSurface {
 
                             handler.postDelayed({
                                 if (isAdded && !isDetached) leaveStage()
-                            }, 6000L)
+                            }, FATAL_ERROR_AUTO_CLOSE_DELAY_MS)
                             return
                         }
 
@@ -639,7 +640,7 @@ class PlaybackFragment : Fragment(), PipSurface {
 
                             handler.postDelayed({
                                 if (isAdded && !isDetached) leaveStage()
-                            }, 6000L)
+                            }, FATAL_ERROR_AUTO_CLOSE_DELAY_MS)
                         }
                     }
 
@@ -756,7 +757,7 @@ class PlaybackFragment : Fragment(), PipSurface {
             player = null
             handler.postDelayed({
                 if (isAdded && !isDetached) leaveStage()
-            }, 6000L)
+            }, FATAL_ERROR_AUTO_CLOSE_DELAY_MS)
             return
         }
 

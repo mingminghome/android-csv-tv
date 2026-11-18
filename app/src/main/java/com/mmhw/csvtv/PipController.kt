@@ -674,9 +674,16 @@ class PipController(
     }
 
     private fun hiddenExcept(skip: Fragment): Fragment? {
-        return activity.supportFragmentManager.fragments.firstOrNull { fragment ->
-            fragment !== skip && fragment !== corner && fragment.isHidden && fragment.isAdded
-        }
+        val fragments = activity.supportFragmentManager.fragments
+        val main = fragments.filterIsInstance<MainFragment>().firstOrNull()
+        return PipPolicy.selectRevealedFragment(
+            fragments = fragments,
+            skip = skip,
+            corner = corner,
+            isHidden = { it.isHidden },
+            isAdded = { it.isAdded },
+            fallback = main
+        )
     }
 
     private fun cornerIsLowRam(): Boolean {

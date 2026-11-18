@@ -31,7 +31,10 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.DefaultLivePlaybackSpeedControl
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.LivePlaybackSpeedControl
+import androidx.media3.exoplayer.LoadControl
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.extractor.ts.DefaultTsPayloadReaderFactory
@@ -39,6 +42,7 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.bumptech.glide.Glide
 import com.mmhw.csvtv.AppToolbar
+import com.mmhw.csvtv.DynamicLoadControl
 import com.mmhw.csvtv.R
 import java.util.concurrent.Executors
 
@@ -49,6 +53,7 @@ import java.util.concurrent.Executors
 @UnstableApi
 class ReceiveActivity : AppCompatActivity(), NativeReceiver.Listener, WebViewFragment.Closer {
     private var player: ExoPlayer? = null
+    private var dynamicLoadControl: DynamicLoadControl? = null
     private var currentUri: String? = null
 
     private lateinit var idle: View
@@ -374,6 +379,9 @@ class ReceiveActivity : AppCompatActivity(), NativeReceiver.Listener, WebViewFra
         liveRetries = 0
         if (liveTs) {
             resetLiveBuffer()
+            playerView.setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
+        } else {
+            playerView.setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
         }
         ensurePlayer(live = liveTs)
         val p = player ?: return
@@ -443,7 +451,7 @@ class ReceiveActivity : AppCompatActivity(), NativeReceiver.Listener, WebViewFra
             Player.STATE_BUFFERING -> {
                 if (!liveReadyOnce) return
                 main.removeCallbacks(liveStableCheck)
-                applyLiveBuffer(LiveBufferPolicy.afterRebuffer(liveBufferLevel), rebuild = true)
+                applyLiveBuffer(LiveBufferPolicy.afterRebuffer(liveBufferLevel))
             }
         }
     }
@@ -451,25 +459,19 @@ class ReceiveActivity : AppCompatActivity(), NativeReceiver.Listener, WebViewFra
     private fun onLivePlaybackStable() {
         if (isDestroyed || !liveTs) return
         if (player?.playbackState != Player.STATE_READY) return
-        applyLiveBuffer(LiveBufferPolicy.afterStable(liveBufferLevel), rebuild = true)
+        applyLiveBuffer(LiveBufferPolicy.afterStable(liveBufferLevel))
     }
 
-    private fun applyLiveBuffer(newLevel: Int, rebuild: Boolean) {
+    private fun applyLiveBuffer(newLevel: Int) {
         val level = newLevel.coerceIn(0, LiveBufferPolicy.maxLevel)
         val now = SystemClock.elapsedRealtime()
         if (level == liveBufferLevel) return
         if (!LiveBufferPolicy.shouldAdjust(now, lastBufferAdjustMs)) return
         liveBufferLevel = level
         lastBufferAdjustMs = now
-        Log.i("ReceiveActivity", "live buffer level=$level")
-        if (!rebuild || !liveTs) return
-        val uri = currentUri ?: return
-        liveReadyOnce = false
-        main.removeCallbacks(liveStableCheck)
-        releasePlayer()
-        ensurePlayer(live = true)
-        val p = player ?: return
-        playLiveTs(p, uri)
+        val buf = LiveBufferPolicy.profile(level)
+        Log.i("ReceiveActivity", "live buffer level=$level min=${buf.minBufferMs}ms rebuffer=${buf.rebufferMs}ms targetOffset=${buf.targetOffsetMs}ms")
+        dynamicLoadControl?.apply(buf)
     }
 
     private fun loadAlbum(url: String) {
@@ -920,8 +922,21 @@ class ReceiveActivity : AppCompatActivity(), NativeReceiver.Listener, WebViewFra
     private fun ensurePlayer(live: Boolean = false) {
         if (player != null && playerLive == live) return
         if (player != null) releasePlayer()
+        val loadControl: LoadControl?
+        val speedControl: LivePlaybackSpeedControl?
         val buffers = if (live) {
             val buf = LiveBufferPolicy.profile(liveBufferLevel)
+            val dlc = DynamicLoadControl(buf)
+            dynamicLoadControl = dlc
+            loadControl = dlc
+            speedControl = DefaultLivePlaybackSpeedControl.Builder()
+                .setFallbackMinPlaybackSpeed(0.96f)
+                .setFallbackMaxPlaybackSpeed(1.04f)
+                .setMinUpdateIntervalMs(1_000)
+                .setProportionalControlFactor(0.1f)
+                .setMaxLiveOffsetErrorMsForUnitSpeed(150)
+                .setTargetLiveOffsetIncrementOnRebufferMs(buf.rebufferMs.toLong())
+                .build()
             AppPlayer.Buffers(
                 minMs = buf.minBufferMs,
                 maxMs = buf.maxBufferMs,
@@ -930,6 +945,9 @@ class ReceiveActivity : AppCompatActivity(), NativeReceiver.Listener, WebViewFra
                 prioritizeTimeOverSize = true
             )
         } else {
+            dynamicLoadControl = null
+            loadControl = null
+            speedControl = null
             AppPlayer.Buffers(
                 minMs = 800,
                 maxMs = 4_000,
@@ -937,7 +955,12 @@ class ReceiveActivity : AppCompatActivity(), NativeReceiver.Listener, WebViewFra
                 rebufferMs = 800
             )
         }
-        val p = AppPlayer.create(this, buffers).player
+        val p = AppPlayer.create(
+            this,
+            buffers,
+            loadControl = loadControl,
+            liveSpeedControl = speedControl
+        ).player
         p.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_ENDED && album != null) {
@@ -958,7 +981,7 @@ class ReceiveActivity : AppCompatActivity(), NativeReceiver.Listener, WebViewFra
                 val liveUri = currentUri
                 if (liveTs && liveUri != null && liveRetries < 8 && !isDestroyed) {
                     liveRetries++
-                    applyLiveBuffer(LiveBufferPolicy.afterError(liveBufferLevel), rebuild = false)
+                    applyLiveBuffer(LiveBufferPolicy.afterError(liveBufferLevel))
                     Log.w("ReceiveActivity", "live retry $liveRetries: $detail")
                     errorView.visibility = View.VISIBLE
                     errorView.text = getString(R.string.receiver_retrying)
@@ -985,6 +1008,7 @@ class ReceiveActivity : AppCompatActivity(), NativeReceiver.Listener, WebViewFra
         player?.release()
         player = null
         playerLive = false
+        dynamicLoadControl = null
     }
 
     private fun showWeb(uri: String) {
